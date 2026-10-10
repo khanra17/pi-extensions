@@ -61,6 +61,8 @@ export interface LiveSessionControllerOptions {
 	signal?: AbortSignal;
 	native?: LiveNativeBindings;
 	createTransport?: (options: LiveTransportOptions) => LiveTransport | Promise<LiveTransport>;
+	/** False when the browser owns microphone capture and WebRTC audio. */
+	captureAudio?: boolean;
 	createAudioCapture?: (
 		native: LiveNativeBindings,
 		onAudio: (error: Error | null, samples: Float32Array) => void,
@@ -183,7 +185,7 @@ export class LiveSessionController {
 
 		try {
 			this.releaseInput = claimMicrophone(this.options.sessionId, "live");
-			const native = this.native ?? loadLiveNative();
+			const native = this.options.captureAudio === false ? undefined : (this.native ?? loadLiveNative());
 			this.native = native;
 			const transport = await this.createTransport({
 				getAuth: this.options.getAuth,
@@ -202,6 +204,7 @@ export class LiveSessionController {
 			await transport.connect();
 			if (this.stopped) throw this.failure ?? new Error("The live session stopped while connecting.");
 
+			if (native) {
 			const onAudio = (error: Error | null, samples: Float32Array) => {
 				if (error) this.reportFailure(error);
 				else this.handleMicrophoneAudio(samples);
@@ -214,6 +217,7 @@ export class LiveSessionController {
 				throw this.failure ?? new Error("The live session stopped while recording began.");
 			}
 			this.recorder = recorder;
+			}
 			transport.setMuted(this.mutedValue);
 			this.refreshAudioPhase();
 		} catch (cause) {

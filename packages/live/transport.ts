@@ -35,6 +35,9 @@ export interface LiveTransportOptions {
 	callbacks: LiveTransportCallbacks;
 	signal?: AbortSignal;
 	native?: LiveNativeBindings;
+	/** Browser owns the WebRTC peer and media tracks; Node only signals and handles sideband. */
+	browserOffer?: string;
+	onBrowserAnswer?: (answer: string) => void;
 }
 
 type Lifecycle = "idle" | "connecting" | "connected" | "closing" | "closed";
@@ -140,7 +143,7 @@ export function buildLiveHeaders(
 /** WebRTC carries microphone/output audio; the sideband carries text and delegation events. */
 export class CodexLiveTransport {
 	private readonly options: LiveTransportOptions;
-	private readonly native: LiveNativeBindings;
+	private readonly native: LiveNativeBindings | undefined;
 	private readonly realtimeSessionId = crypto.randomUUID();
 	private readonly closeController = new AbortController();
 	private readonly operationSignal: AbortSignal;
@@ -156,7 +159,7 @@ export class CodexLiveTransport {
 
 	constructor(options: LiveTransportOptions) {
 		this.options = options;
-		this.native = options.native ?? loadLiveNative();
+		this.native = options.native ?? (options.browserOffer ? undefined : loadLiveNative());
 		this.operationSignal = options.signal
 			? AbortSignal.any([options.signal, this.closeController.signal])
 			: this.closeController.signal;
@@ -197,6 +200,16 @@ export class CodexLiveTransport {
 	}
 
 	private async connectInternal(): Promise<void> {
+		if (this.options.browserOffer) {
+			const signaling = await this.signalOffer(this.options.browserOffer);
+			if (this.state !== "connecting") throw abortReason(this.operationSignal);
+			this.options.onBrowserAnswer?.(signaling.answer);
+			await this.connectSideband(signaling.callId, signaling.auth, signaling.attestation);
+			if (this.state !== "connecting") throw abortReason(this.operationSignal);
+			this.state = "connected";
+			return;
+		}
+		if (!this.native) throw new Error("Native WebRTC is unavailable.");
 		const peer = new this.native.LiveWebRtcPeer(
 			(error, payload) => {
 				if (error) this.reportFailure(error.message);
@@ -226,7 +239,7 @@ export class CodexLiveTransport {
 		if (!auth.accessToken || !auth.accountId) {
 			throw new Error("OpenAI Codex OAuth credentials are incomplete. Run /login and choose OpenAI Codex.");
 		}
-		const attestation = await generateCodexAttestation(this.native);
+		const attestation = await generateCodexAttestation(this.native ?? {});
 		const url = buildLiveSignalingUrl(auth.baseUrl);
 		const headers = buildLiveHeaders(auth, this.options.sessionId, this.realtimeSessionId, attestation);
 		const proxyUrl = getProxyForUrl(url);
