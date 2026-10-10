@@ -231,10 +231,26 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
       if (event.data?.error) fail(new Error(String(event.data.error)));
     }
     if (event.type === "request") {
-      const action = String(event.data.action), args = String(event.data.args ?? ""); setPanel(true);
-      if (["stop", "cancel"].includes(action)) { if (event.feature === "tts") stopSpeech(); else cancelRun(); }
-      else if (event.feature === "tts" && ["speed", "volume"].includes(action) && Number.isFinite(Number(args))) void configure({ [action]: Number(args) });
-      else setMessage("Use the voice buttons to grant microphone/audio permission on this device.");
+      const action = String(event.data.action).toLowerCase(), args = String(event.data.args ?? "").trim(); setPanel(true);
+      if (event.feature === "dictation" && action === "stop" && run.current?.kind === "dictation") { void stopDictation(); return; }
+      if (["stop", "cancel"].includes(action)) { if (event.feature === "tts") stopSpeech(); else cancelRun(); return; }
+      if (event.feature === "tts") {
+        if (action === "pause") { player.current?.pause(); setPaused(true); return; }
+        if (action === "resume") { void player.current?.resume().catch(fail); setPaused(false); return; }
+        if (["speed", "volume"].includes(action) && args && Number.isFinite(Number(args))) { void configure({ [action]: Number(args) }); return; }
+        if (["auto", "code", "highlight", "mute"].includes(action)) {
+          const key = ({ auto: "autoPlay", code: "readCode", highlight: "highlightEnabled", mute: "muted" } as const)[action as "auto" | "code" | "highlight" | "mute"];
+          if (!["", "toggle", "on", "off"].includes(args)) { setMessage("Choose on, off or toggle."); return; }
+          void configure({ [key]: args === "on" ? true : args === "off" ? false : !settingsRef.current[key] }); return;
+        }
+        if (action === "voice") {
+          if (args) void configure({ voice: args });
+          else void initialize().then(session => raw(session, "tts", "voices")).then(response => response.json()).then(setVoices).catch(fail);
+          return;
+        }
+        if (["play", "replay", "previous", "next"].includes(action) && player.current) { speak(action === "previous" ? -1 : action === "next" ? 1 : 0); return; }
+      }
+      setMessage("Use the voice buttons to grant microphone/audio permission on this device.");
     }
   };
   useEffect(() => {
@@ -264,7 +280,7 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
     mounted.current = true;
     const hide = () => { if (document.hidden) { cancelRun(); stopSpeech(); } };
     const key = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.isComposing || document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      if (event.repeat || event.defaultPrevented || event.isComposing || document.querySelector('[role="dialog"][aria-modal="true"]')) return;
       if ((event.altKey && event.code === "KeyM") || (event.ctrlKey && event.code === "Space")) { event.preventDefault(); void dictate(); }
       if (event.ctrlKey && event.shiftKey && event.code === "KeyL") { event.preventDefault(); void live(); }
       if (event.ctrlKey && event.altKey && event.code === "KeyV") { event.preventDefault(); setPanel(value => !value); }
