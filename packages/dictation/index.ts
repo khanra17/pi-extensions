@@ -1,6 +1,8 @@
 import { CustomEditor, type ExtensionAPI, type ExtensionContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, isKeyRepeat, matchesKey, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 import { VoiceController } from "./controller.ts";
+import { BrowserDictation } from "./browser.ts";
+import { registerBrowserFeature, requestBrowser } from "../../shared/browser.ts";
 import { ComposerDraft, joinAtCursor } from "./composer.ts";
 import { loadVoiceDictionary, removeVoiceReplacement, setVoiceReplacement, VOICE_DICTIONARY_PATH } from "./dictionary.ts";
 import { recorderDescription } from "./recorder.ts";
@@ -10,6 +12,8 @@ const STATUS = "pi-dictation";
 
 export default function dictation(pi: ExtensionAPI): void {
 	const voice = new VoiceController();
+	let browser: BrowserDictation | undefined;
+	let closeBrowser: (() => Promise<void>) | undefined;
 	let editor: DictationEditor | undefined;
 	let context: ExtensionContext | undefined;
 	let widget: VoiceStatusWidget | undefined;
@@ -20,6 +24,11 @@ export default function dictation(pi: ExtensionAPI): void {
 		await voice.cancel();
 		editor?.close(); widget?.dispose();
 		context = ctx;
+		await closeBrowser?.();
+		if (ctx.mode === "rpc") {
+			browser = new BrowserDictation(ctx);
+			closeBrowser = registerBrowserFeature(ctx, "dictation", browser);
+		}
 		if (ctx.mode !== "tui") return;
 		ctx.ui.setEditorComponent((tui, theme, bindings) => {
 			editor?.close();
@@ -30,12 +39,12 @@ export default function dictation(pi: ExtensionAPI): void {
 			return widget = new VoiceStatusWidget(tui, theme, voice);
 		}, { placement: "aboveEditor" });
 	});
-	const cancel = async () => { await voice.cancel(); };
+	const cancel = async () => { await voice.cancel(); await browser?.cancel(); };
 	pi.on("session_before_switch", cancel);
 	pi.on("session_before_fork", cancel);
 	pi.on("session_before_tree", cancel);
 	pi.on("session_shutdown", async (_event, ctx) => {
-		await voice.dispose();
+		await voice.dispose(); await closeBrowser?.(); browser = undefined; closeBrowser = undefined;
 		editor?.close(); widget?.dispose();
 		editor = undefined; widget = undefined; context = undefined;
 		if (ctx.mode === "tui") {
@@ -47,7 +56,7 @@ export default function dictation(pi: ExtensionAPI): void {
 
 	for (const key of ["alt+m", "ctrl+space"] as const) pi.registerShortcut(key, {
 		description: "Start/stop editable microphone dictation",
-		handler: async (ctx) => voice.toggle(ctx, insert),
+		handler: async (ctx) => { if (ctx.mode === "rpc") requestBrowser(ctx, "dictation", "toggle"); else voice.toggle(ctx, insert); },
 	});
 	pi.registerCommand("voice", {
 		description: "Editable dictation; never submits the transcript",
@@ -58,6 +67,9 @@ export default function dictation(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => {
 			const corrections = args.trim().match(/^corrections(?:\s+(.*))?$/iu);
 			if (corrections) { await dictionaryCommand(corrections[1] ?? "", ctx); return; }
+			if (ctx.mode === "rpc" && ["", "toggle", "start", "stop", "cancel"].includes(args.trim().toLowerCase())) {
+				requestBrowser(ctx, "dictation", args.trim().toLowerCase() || "toggle"); return;
+			}
 			switch (args.trim().toLowerCase()) {
 				case "": case "toggle": voice.toggle(ctx, insert); break;
 				case "start": await voice.start(ctx, insert); break;
