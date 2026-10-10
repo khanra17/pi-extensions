@@ -28,8 +28,7 @@
     "extensions": [
       "./packages/dictation/index.ts",
       "./packages/live/index.ts",
-      "./packages/read-aloud/index.ts",
-      "./packages/codex-fast/index.ts"
+      "./packages/read-aloud/index.ts"
     ]
   }
 }

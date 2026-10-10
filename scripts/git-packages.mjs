@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, posix, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const packageRefs = ["dictation", "live", "read-aloud", "codex-fast"];
+export const packageRefs = ["dictation", "live", "read-aloud"];
 
 // Publish normal Git package roots, using the canonical source blobs.
 // This is maintainer tooling; clients install directly with npm's Git resolver.

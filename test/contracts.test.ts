@@ -1,6 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { priorityPayload } from "../packages/codex-fast/index.ts";
 import { assistantText, messagePhase, textContent } from "../shared/messages.ts";
 import { claimMicrophone } from "../shared/microphone.ts";
 import { buildLiveStartupContext } from "../packages/live/context.ts";
@@ -10,14 +9,6 @@ import { validateLiveNativeBindings, resolveLiveNativePackage } from "../package
 import { LiveSessionController } from "../packages/live/controller.ts";
 
 const codex = { provider: "openai-codex", api: "openai-codex-responses", id: "test-model" };
-test("fast mode requests priority without mutating the original request", () => {
-	const request = { model: codex.id, input: [{ role: "user", content: "hello" }], reasoning: { effort: "high" } };
-	assert.deepEqual(priorityPayload(request, codex, true), { ...request, service_tier: "priority" });
-	assert.equal("service_tier" in request, false);
-});
-for (const [name, model, enabled] of [["disabled", codex, false], ["another provider", { ...codex, provider: "openai" }, true], ["another API", { ...codex, api: "openai-responses" }, true], ["a nested other model", { ...codex, id: "other" }, true]] as const) {
-	test(`fast mode leaves ${name} untouched`, () => assert.equal(priorityPayload({ model: codex.id }, model, enabled), undefined));
-}
 test("speech extraction never includes thinking or tool payloads/results", () => {
 	const content = [{ type: "thinking", thinking: "SECRET" }, { type: "text", text: "Working update" }, { type: "toolCall", name: "bash", arguments: { command: "SECRET" } }];
 	assert.equal(assistantText({ role: "assistant", content, stopReason: "toolUse" }), "Working update");

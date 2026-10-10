@@ -8,7 +8,7 @@ import { DefaultResourceLoader, SettingsManager, createAgentSession, SessionMana
 
 process.env.PI_OFFLINE = "1";
 const root = fileURLToPath(new URL("..", import.meta.url));
-const commands = { dictation: "voice", live: "live", "read-aloud": "tts", "codex-fast": "fast" };
+const commands = { dictation: "voice", live: "live", "read-aloud": "tts" };
 
 for (const [name, command] of Object.entries(commands)) test(`${name} loads independently through Pi's public resource loader`, async () => {
 	const directory = await mkdtemp(join(tmpdir(), "pi-kit-package-"));
@@ -27,16 +27,12 @@ test("the monorepo loads one owner per command with no conflicts or browser patc
 	try {
 		const settings = SettingsManager.inMemory();
 		const loader = new DefaultResourceLoader({ cwd: directory, agentDir: directory, settingsManager: settings, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true, additionalExtensionPaths: [root] });
-		await loader.reload(); const loaded = loader.getExtensions(); assert.deepEqual(loaded.errors, []); assert.equal(loaded.extensions.length, 4);
-		assert.deepEqual(loaded.extensions.flatMap((extension) => [...extension.commands.keys()]).sort(), ["fast", "live", "tts", "voice"]);
+		await loader.reload(); const loaded = loader.getExtensions(); assert.deepEqual(loaded.errors, []); assert.equal(loaded.extensions.length, 3);
+		assert.deepEqual(loaded.extensions.flatMap((extension) => [...extension.commands.keys()]).sort(), ["live", "tts", "voice"]);
 		const { session } = await createAgentSession({ cwd: directory, agentDir: directory, settingsManager: settings, resourceLoader: loader, sessionManager: SessionManager.inMemory(directory) });
 		try {
 			await session.bindExtensions({ mode: "rpc" });
 			assert.deepEqual(session.extensionRunner.getCommandDiagnostics(), []);
-			await session.prompt("/fast on");
-			const state = session.sessionManager.getBranch().find((entry) => entry.type === "custom" && entry.customType === "pi-codex-fast");
-			assert.ok(state);
-			await session.prompt("/fast off");
 			await session.prompt("/voice start"); // RPC guard: no microphone or upload.
 			await session.prompt("/tts play"); // RPC guard: no audio backend.
 		} finally { await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }); session.dispose(); }
@@ -52,6 +48,6 @@ test("package manifests have explicit, non-overlapping entry points and host pee
 		assert.deepEqual(manifest.pi.extensions, ["./index.ts"]);
 		assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], "*");
 		assert.equal(manifest.dependencies?.["@earendil-works/pi-coding-agent"], undefined);
-		if (name === "codex-fast" || name === "dictation") { assert.equal(manifest.dependencies, undefined); assert.equal(manifest.optionalDependencies, undefined); }
+		if (name === "dictation") { assert.equal(manifest.dependencies, undefined); assert.equal(manifest.optionalDependencies, undefined); }
 	}
 });

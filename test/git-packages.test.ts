@@ -24,7 +24,6 @@ function fixture() {
     dictation: 'import "../../shared/codex.ts"; import "../../shared/microphone.ts";',
     live: 'import "../../shared/codex.ts"; import "../../shared/microphone.ts";',
     "read-aloud": 'import "../../shared/messages.ts";',
-    "codex-fast": "export {};",
   };
   for (const [name, code] of Object.entries(imports)) {
     const path = join(cwd, "packages", name);
@@ -49,7 +48,7 @@ function fixture() {
   return { cwd, git, cleanup: () => rmSync(cwd, { recursive: true, force: true }) };
 }
 
-for (const name of ["dictation", "live", "read-aloud", "codex-fast"]) {
+for (const name of ["dictation", "live", "read-aloud"]) {
   test(`Git package ref ${name} contains only its extension and required shared source`, () => {
     const f = fixture();
     try {
@@ -64,7 +63,7 @@ for (const name of ["dictation", "live", "read-aloud", "codex-fast"]) {
       assert.ok(!files.includes("shared/unused.ts"));
       assert.ok(!files.includes(`packages/${name}/package.json`));
       const shared = files.filter((path: string) => path.startsWith("shared/"));
-      assert.deepEqual(shared, name === "codex-fast" ? [] : name === "read-aloud"
+      assert.deepEqual(shared, name === "read-aloud"
         ? ["shared/messages.ts"] : ["shared/codex.ts", "shared/messages.ts", "shared/microphone.ts"]);
       assert.equal(f.git(["rev-list", "--count", name]), "1");
       assert.deepEqual(generatePackageRefs({ cwd: f.cwd }), refs);
