@@ -29,9 +29,14 @@ try {
   browser = await chromium.launch({ channel: "msedge", headless: true, args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"] });
   for (const [name, viewport] of [["desktop", { width: 1280, height: 850 }], ["mobile", { width: 390, height: 844 }]]) {
     const context = await browser.newContext({ viewport, isMobile: name === "mobile", hasTouch: name === "mobile" });
-    const page = await context.newPage(); const errors = []; const prompts = [];
+    const page = await context.newPage(); const errors = []; const prompts = []; const speechRequests = [];
     page.on("pageerror", error => errors.push(error.message));
-    page.on("request", request => { if (request.method() === "POST" && new URL(request.url()).pathname === `/api/agent/${session.getSessionId()}`) { try { if (request.postDataJSON().type === "prompt") prompts.push(request.url()); } catch {} } });
+    page.on("request", request => {
+      const url = new URL(request.url());
+      if (request.method() !== "POST") return;
+      if (url.pathname === `/api/agent/${session.getSessionId()}`) { try { if (request.postDataJSON().type === "prompt") prompts.push(request.url()); } catch {} }
+      if (url.pathname === `/api/pi-voice/v1/${session.getSessionId()}` && url.searchParams.get("feature") === "tts" && url.searchParams.get("action") === "speak") speechRequests.push(request.url());
+    });
     await page.addInitScript(() => {
       window.__voiceTracks = []; const get = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
       navigator.mediaDevices.getUserMedia = async constraints => { const stream = await get(constraints); window.__voiceTracks.push(...stream.getTracks()); return stream; };
@@ -50,14 +55,21 @@ try {
     await input.fill("My deliberate edit."); await page.getByRole("button", { name: "Stop dictation", exact: true }).click();
     await page.getByRole("button", { name: "Start dictation", exact: true }).waitFor();
     assert.equal(await input.inputValue(), "My deliberate edit.");
+    assert.equal(await page.locator(".pi-voice-controls > button").count(), 3, "Full voice toolbar has only microphone, Live and one panel launcher");
+    assert.equal(await page.getByRole("button", { name: "Voice controls", exact: true }).count(), 0, "No duplicate settings launcher");
     await page.getByRole("button", { name: "Read aloud", exact: true }).click();
+    await page.getByRole("button", { name: "Play", exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Read aloud", exact: true }).getAttribute("aria-expanded"), "true");
+    await page.waitForTimeout(250);
+    assert.equal(speechRequests.length, 0, "Opening playback/settings must not start speech");
+    await page.getByRole("button", { name: "Play", exact: true }).click();
     await page.getByRole("button", { name: "Pause", exact: true }).waitFor();
     await page.waitForFunction(() => CSS.highlights?.has("pi-voice-word"));
     await page.getByRole("button", { name: "Pause", exact: true }).click();
     await page.getByRole("button", { name: "Resume", exact: true }).click();
     await page.getByRole("button", { name: "Stop", exact: true }).click();
     await page.screenshot({ path: join(agent, `${name}-before-picker.png`), fullPage: true });
-    if (!await page.locator(".pi-voice-panel").count()) await page.getByRole("button", { name: "Voice controls", exact: true }).click();
+    if (!await page.locator(".pi-voice-panel").count()) await page.getByRole("button", { name: "Read aloud", exact: true }).click();
     await page.getByRole("button", { name: "Browse voices", exact: true }).click();
     await page.getByRole("textbox", { name: "Search voices" }).fill("Ava");
     await page.getByRole("button", { name: /^Ava\b/ }).waitFor();
@@ -75,9 +87,29 @@ try {
     await page.getByRole("button", { name: "Stop Live voice", exact: true }).click();
     assert.ok(await page.evaluate(() => window.__voiceTracks.every(track => track.readyState === "ended")), "Viewing-device microphone tracks must all stop");
     await page.evaluate(() => window.__fixturePeer?.close());
+    let advertised = ["dictation", "live"];
+    await page.route("**/api/pi-voice/v1/*", async route => {
+      const url = new URL(route.request().url());
+      if (route.request().method() === "GET" && !url.search) {
+        const response = await route.fetch(); const info = await response.json();
+        await route.fulfill({ response, json: { ...info, features: advertised } });
+      } else await route.continue();
+    });
+    await page.reload();
+    await page.getByRole("button", { name: "Voice controls", exact: true }).waitFor();
+    assert.equal(await page.locator(".pi-voice-controls > button").count(), 3, "Without TTS the single generic launcher keeps microphone/Live controls accessible");
+    assert.equal(await page.getByRole("button", { name: "Read aloud", exact: true }).count(), 0);
+    await page.getByRole("button", { name: "Voice controls", exact: true }).click();
+    await page.getByRole("region", { name: "Voice controls panel", exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Play", exact: true }).count(), 0);
+    advertised = ["tts"]; await page.reload();
+    await page.waitForFunction(() => document.querySelectorAll(".pi-voice-controls > button").length === 1);
+    await page.getByRole("button", { name: "Read aloud", exact: true }).click();
+    await page.getByRole("button", { name: "Play", exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Voice controls", exact: true }).count(), 0, "TTS alone needs only its speaker launcher");
 
     assert.deepEqual(errors, [], "No browser runtime errors");
-    await context.close(); console.log(`Chromium ${name}: draft preservation, progressive dictation, no auto-send, user edits, MP3 playback, highlighting, picker, WebRTC and microphone cleanup passed`);
+    await context.close(); console.log(`Chromium ${name}: three-button toolbar, explicit playback, draft preservation, progressive dictation, no auto-send, user edits, MP3 playback, highlighting, picker, WebRTC and microphone cleanup passed`);
   }
   const entries = readFileSync(session.getSessionFile(), "utf8").trim().split("\n").map(line => JSON.parse(line));
   assert.equal(entries.filter(entry => entry.type === "message").length, 2, "Dictation must not append any conversation messages");

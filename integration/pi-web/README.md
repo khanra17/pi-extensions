@@ -27,7 +27,7 @@ Keep the existing HTTPS proxy/password configuration and reload the page. Mobile
 
 - Microphone: tap to toggle or hold to talk. Alt+M/Ctrl+Space toggle; Esc cancels. Drafts remain editable; recording/finalizing cannot submit them.
 - Live: click its button or Ctrl+Shift+L; mute/end controls stay in the page. `/live voice` selects the response voice through Pi Web's extension dialog.
-- Speaker: opens playback, adjacent-message controls and searchable voices. Pause holds the queue; Stop clears it. Auto-read speaks new visible assistant updates/finals, not thinking or tool data.
+- Speaker: the single playback/settings launcher; opening it does not start speech. Press Play inside. Adjacent-message controls and searchable voices are in the same panel. Pause holds the queue; Stop clears it. Auto-read speaks new visible assistant updates/finals, not thinking or tool data. Without read-aloud installed, a generic controls icon takes its place.
 - Ctrl+Alt+V opens the panel. Closing it leaves speech playing; hiding the page stops media. Composer/session/tree changes are fenced against late results.
 
 Slash commands open the browser controls; microphone/audio permission is granted with a viewing-device gesture. Terminal controls remain independent.
