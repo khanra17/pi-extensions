@@ -68,6 +68,11 @@ for (const name of ["dictation", "live", "read-aloud", "codex-fast"]) {
         ? ["shared/messages.ts"] : ["shared/codex.ts", "shared/messages.ts", "shared/microphone.ts"]);
       assert.equal(f.git(["rev-list", "--count", name]), "1");
       assert.deepEqual(generatePackageRefs({ cwd: f.cwd }), refs);
+      const commit = f.git(["rev-parse", name]);
+      f.git(["update-ref", `refs/remotes/origin/${name}`, commit]);
+      f.git(["update-ref", "-d", `refs/heads/${name}`]);
+      assert.deepEqual(generatePackageRefs({ cwd: f.cwd }), refs);
+      assert.equal(f.git(["rev-parse", name]), commit);
       assert.equal(f.git(["status", "--porcelain"]), "");
     } finally {
       f.cleanup();

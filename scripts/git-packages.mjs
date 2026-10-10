@@ -57,16 +57,23 @@ export function generatePackageRefs({ cwd = process.cwd(), ref = "HEAD" } = {}) 
         env, input: [...selected].map(([path, entry]) => `${entry.mode} ${entry.hash}\t${path}\0`).join(""),
       });
       const tree = git(["write-tree"], { env });
+      const branch = `refs/heads/${name}`;
+      let localPrevious;
       let previous;
-      try { previous = git(["rev-parse", "--verify", "--quiet", `refs/heads/${name}`]); } catch {}
-      // No reference to the monorepo's history: only the selected package ships.
+      try { localPrevious = git(["rev-parse", "--verify", "--quiet", branch]); } catch {}
+      previous = localPrevious;
+      if (!previous) {
+        try { previous = git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${name}`]); } catch {}
+      }
+      // Package history never refers to the monorepo's source history.
       if (previous && git(["rev-parse", `${previous}^{tree}`]) === tree) {
+        if (!localPrevious) git(["update-ref", branch, previous, ""]);
         results.push({ name, commit: previous, source });
         continue;
       }
       const parents = previous ? ["-p", previous] : [];
       const commit = git(["commit-tree", tree, ...parents, "-m", `Package ${manifest.name} from ${source}`]);
-      git(["update-ref", `refs/heads/${name}`, commit, previous || ""]);
+      git(["update-ref", branch, commit, localPrevious || ""]);
       results.push({ name, commit, source });
     }
     return results;
