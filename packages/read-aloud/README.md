@@ -8,6 +8,8 @@ The voice picker searches names, languages, regions, locales and genders. Auto-r
 
 Highlights prose, not fenced code. Closing the panel leaves playback running; `/tts stop` ends it. Mouse controls and fullscreen scrolling are supported.
 
-Requires the terminal UI. Uses Edge Read Aloud without an account key and native audio playback, with optional `mpv` fallback.
+Uses Edge Read Aloud without an account key. [Pi Web integration](https://github.com/khanra17/pi-extensions/tree/main/integration/pi-web) plays audio on the viewing device, with an in-page picker and controls. Browser highlighting targets assistant prose in the existing message view.
+
+Terminal playback is native, with optional `mpv` fallback.
 
 Preferences: `~/.pi/agent/pi-edge-tts.json`. See [third-party notices](THIRD_PARTY_NOTICES.md).

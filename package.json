@@ -9,7 +9,11 @@
   "scripts": {
     "check": "tsc --noEmit",
     "test": "node --import tsx --test test/*.test.ts",
-    "package:git": "node scripts/git-packages.mjs"
+    "package:git": "node scripts/git-packages.mjs",
+    "web:check": "node scripts/pi-web-integration.mjs check",
+    "web:build": "node scripts/pi-web-integration.mjs build",
+    "web:start": "node scripts/pi-web-integration.mjs start",
+    "test:browser": "node test/browser-smoke.mjs"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.1.0",

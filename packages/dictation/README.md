@@ -8,7 +8,9 @@ Previews upload growing WAV snapshots about every two seconds plus server latenc
 
 ## Requirements
 
-Terminal UI and Codex OAuth (`/login`). Windows uses native capture; macOS/Linux require `ffmpeg`. The Windows file-only fallback cannot preview.
+Codex OAuth (`/login`). [Pi Web integration](https://github.com/khanra17/pi-extensions/tree/main/integration/pi-web) captures the viewing device over HTTPS. Use the microphone button, Alt+M or Ctrl+Space; hold the button to talk. It preserves the draft and never sends it.
+
+In the terminal, Windows uses native capture; macOS/Linux require `ffmpeg`. The Windows file-only fallback cannot preview.
 
 - `PI_CODEX_VOICE_DEVICE`: capture device.
 - `PI_CODEX_VOICE_RECORDER=ffmpeg`: use ffmpeg on Windows.

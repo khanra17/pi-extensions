@@ -20,7 +20,9 @@ These use npm's GitHub source resolver, not the npm registry. No npm account is 
 
 Run `/reload` after installation. To update, repeat its install command; to remove, replace `install` with `remove`.
 
-Audio features require the terminal UI and use the Pi host's devices, not browser devices. Dictation and Live require Codex OAuth (`/login`). Their ChatGPT endpoints and Edge Read Aloud are unofficial.
+Use them in the terminal or with the [in-page Pi Web integration](integration/pi-web). In Pi Web, media uses the viewing device; stock Pi Web needs the integration build.
+
+Dictation and Live require Codex OAuth (`/login`). Their ChatGPT endpoints and Edge Read Aloud are unofficial.
 
 ## Development
 

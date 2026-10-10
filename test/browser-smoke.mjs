@@ -1,0 +1,93 @@
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, existsSync } from "node:fs";
+import { join, dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { spawn, execFileSync } from "node:child_process";
+import assert from "node:assert/strict";
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const build = JSON.parse(readFileSync(join(root, ".cache/pi-web-build.json"), "utf8")).directory;
+const agent = mkdtempSync(join(root, ".cache/browser-smoke-"));
+process.env.PI_CODING_AGENT_DIR = agent;
+const { SessionManager } = await import("@earendil-works/pi-coding-agent");
+const cwd = join(agent, "workspace"); mkdirSync(cwd, { recursive: true });
+const session = SessionManager.create(cwd);
+session.appendMessage({ role: "user", content: [{ type: "text", text: "Read this reply." }], timestamp: Date.now() });
+session.appendMessage({ role: "assistant", content: [{ type: "thinking", thinking: "DO-NOT-SPEAK" }, { type: "text", text: "**Browser** voice test.\n\n```ts\nconsole.log('code');\n```" }], api: "openai-completions", provider: "openai", model: "gpt-4o-mini", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() });
+session.appendSessionInfo("Voice bridge smoke");
+writeFileSync(join(agent, "settings.json"), JSON.stringify({ packages: [], extensions: [join(root, "test/browser-fixture.ts")], defaultProvider: "openai", defaultModel: "gpt-4o-mini" }));
+const mp3 = join(root, ".cache/browser-test.mp3");
+if (!existsSync(mp3)) execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", 'import {synthesizeChunks} from "./packages/read-aloud/edge-read-aloud.ts";import {writeFileSync} from "node:fs";await synthesizeChunks({text:"Browser voice test.",voice:"en-US, AvaNeural",signal:AbortSignal.timeout(20000),onChunk:async c=>writeFileSync(".cache/browser-test.mp3",c.audio)})'], { cwd: root, stdio: "inherit" });
+const output = join(agent, "server.log");
+const child = spawn(process.execPath, [join(build, "bin/pi-web.js"), "--hostname", "127.0.0.1", "--port", "30146"], { cwd: build, env: { ...process.env, PI_CODING_AGENT_DIR: agent, PI_WEB_PASSWORD: "", PI_WEB_SKIP_VERSION_CHECK: "1", PI_VOICE_TEST_MP3: mp3 }, stdio: ["ignore", "pipe", "pipe"] });
+let log = ""; child.stdout.on("data", value => { log += value; writeFileSync(output, log); }); child.stderr.on("data", value => { log += value; writeFileSync(output, log); });
+const base = "http://localhost:30146";
+let browser;
+try {
+  let ready = false;
+  for (let i = 0; i < 80; i++) { try { if ((await fetch(base)).ok) { ready = true; break; } } catch {} await new Promise(resolve => setTimeout(resolve, 250)); }
+  if (!ready) throw new Error("Isolated server did not start. " + log.slice(-4000));
+  const { chromium } = await import(pathToFileURL(join(build, "node_modules/playwright/index.mjs")).href);
+  browser = await chromium.launch({ channel: "msedge", headless: true, args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"] });
+  for (const [name, viewport] of [["desktop", { width: 1280, height: 850 }], ["mobile", { width: 390, height: 844 }]]) {
+    const context = await browser.newContext({ viewport, isMobile: name === "mobile", hasTouch: name === "mobile" });
+    const page = await context.newPage(); const errors = []; const prompts = [];
+    page.on("pageerror", error => errors.push(error.message));
+    page.on("request", request => { if (request.method() === "POST" && new URL(request.url()).pathname === `/api/agent/${session.getSessionId()}`) { try { if (request.postDataJSON().type === "prompt") prompts.push(request.url()); } catch {} } });
+    await page.addInitScript(() => {
+      window.__voiceTracks = []; const get = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = async constraints => { const stream = await get(constraints); window.__voiceTracks.push(...stream.getTracks()); return stream; };
+    });
+    await page.goto(`${base}/?session=${session.getSessionId()}`);
+    await page.getByRole("button", { name: "Start dictation", exact: true }).waitFor({ timeout: 30_000 });
+    const input = page.locator("textarea").first();
+    await input.fill("Existing draft."); await page.getByRole("button", { name: "Start dictation", exact: true }).click();
+    try { await page.waitForFunction(() => /spoken (preview|final)/.test(document.querySelector("textarea")?.value ?? ""), null, { timeout: 15_000 }); }
+    catch (error) { await page.screenshot({ path: join(agent, `${name}-capture-error.png`), fullPage: true }); console.log(await page.locator(".pi-voice-controls").innerText(), await page.locator(".pi-voice-indicator").getAttribute("title"), await page.evaluate(() => ({ secure: isSecureContext, media: typeof navigator.mediaDevices, get: typeof navigator.mediaDevices?.getUserMedia })), errors); throw error; }
+    await page.getByRole("button", { name: "Stop dictation", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector("textarea")?.value === "Existing draft. spoken final", { timeout: 15_000 });
+    assert.equal(prompts.length, 0, "Dictation must never send a prompt");
+    await input.fill("Keep my edit."); await page.getByRole("button", { name: "Start dictation", exact: true }).click();
+    await page.waitForFunction(() => /spoken (preview|final)/.test(document.querySelector("textarea")?.value ?? ""));
+    await input.fill("My deliberate edit."); await page.getByRole("button", { name: "Stop dictation", exact: true }).click();
+    await page.getByRole("button", { name: "Start dictation", exact: true }).waitFor();
+    assert.equal(await input.inputValue(), "My deliberate edit.");
+    await page.getByRole("button", { name: "Read aloud", exact: true }).click();
+    await page.getByRole("button", { name: "Pause", exact: true }).waitFor();
+    await page.waitForFunction(() => CSS.highlights?.has("pi-voice-word"));
+    await page.getByRole("button", { name: "Pause", exact: true }).click();
+    await page.getByRole("button", { name: "Resume", exact: true }).click();
+    await page.getByRole("button", { name: "Stop", exact: true }).click();
+    await page.screenshot({ path: join(agent, `${name}-before-picker.png`), fullPage: true });
+    if (!await page.locator(".pi-voice-panel").count()) await page.getByRole("button", { name: "Voice controls", exact: true }).click();
+    await page.getByRole("button", { name: "Browse voices", exact: true }).click();
+    await page.getByRole("textbox", { name: "Search voices" }).fill("Ava");
+    await page.getByRole("button", { name: /^Ava\b/ }).waitFor();
+    await page.screenshot({ path: join(agent, `${name}.png`), fullPage: true });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "Mobile page must not overflow horizontally");
+    await page.getByRole("button", { name: "Close voice controls", exact: true }).click();
+    await page.route("**/api/pi-voice/v1/*?feature=live&action=start", async route => {
+      const offer = route.request().postDataJSON().offer;
+      const answer = await page.evaluate(async offer => { const peer = new RTCPeerConnection(); window.__fixturePeer = peer; await peer.setRemoteDescription({ type: "offer", sdp: offer }); await peer.setLocalDescription(await peer.createAnswer()); await new Promise(resolve => { if (peer.iceGatheringState === "complete") resolve(); else peer.addEventListener("icegatheringstatechange", () => { if (peer.iceGatheringState === "complete") resolve(); }); }); return peer.localDescription.sdp; }, offer);
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ run: route.request().headers()["x-pi-voice-run"], answer }) });
+    });
+    await page.getByRole("button", { name: "Start Live voice", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector(".pi-voice-indicator")?.textContent === "listening");
+    await page.waitForFunction(() => window.__fixturePeer.connectionState === "connected");
+    await page.getByRole("button", { name: "Stop Live voice", exact: true }).click();
+    assert.ok(await page.evaluate(() => window.__voiceTracks.every(track => track.readyState === "ended")), "Viewing-device microphone tracks must all stop");
+    await page.evaluate(() => window.__fixturePeer?.close());
+
+    assert.deepEqual(errors, [], "No browser runtime errors");
+    await context.close(); console.log(`Chromium ${name}: draft preservation, progressive dictation, no auto-send, user edits, MP3 playback, highlighting, picker, WebRTC and microphone cleanup passed`);
+  }
+  const entries = readFileSync(session.getSessionFile(), "utf8").trim().split("\n").map(line => JSON.parse(line));
+  assert.equal(entries.filter(entry => entry.type === "message").length, 2, "Dictation must not append any conversation messages");
+  const response = await fetch(`${base}/api/pi-voice/v1/${session.getSessionId()}`, { headers: { Origin: "https://evil.invalid", "Sec-Fetch-Site": "cross-site" } });
+  assert.ok(response.status >= 400, "Cross-site requests must fail");
+  console.log("Isolated results:", agent);
+} finally {
+  await browser?.close();
+  if (child.exitCode === null && child.pid) {
+    if (process.platform === "win32") { try { execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" }); } catch {} }
+    else child.kill("SIGTERM");
+  }
+}

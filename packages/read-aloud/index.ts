@@ -1,6 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { assistantText } from "../../shared/messages.ts";
+import { BrowserReadAloud } from "./browser.ts";
+import { registerBrowserFeature, requestBrowser } from "../../shared/browser.ts";
 import { DEFAULT_SETTINGS, EdgeReadAloudController, type ReaderSnapshot } from "./read-aloud-controller.ts";
 import { EdgeReadAloudPanel, type MessageNavigation, type PanelResult } from "./read-aloud-ui.ts";
 import { fetchVoices, type Voice } from "./edge-read-aloud.ts";
@@ -14,6 +16,8 @@ const STATUS = "pi-read-aloud";
 
 export default function readAloud(pi: ExtensionAPI): void {
 	let context: ExtensionContext | undefined;
+	let closeBrowser: (() => Promise<void>) | undefined;
+	let browser: BrowserReadAloud | undefined;
 	let tui: TUI | undefined;
 	let playlist: PlayableSessionMessage[] = [];
 	let selected: string | undefined;
@@ -53,6 +57,11 @@ export default function readAloud(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		context = ctx;
 		reader.setSettings(await loadEdgeTtsSettings());
+		await closeBrowser?.();
+		if (ctx.mode === "rpc") {
+			browser = new BrowserReadAloud(ctx, () => reader.settingsSnapshot, (settings) => reader.setSettings(settings));
+			closeBrowser = registerBrowserFeature(ctx, "tts", browser);
+		}
 		refresh(ctx);
 		const branch = new Set(ctx.sessionManager.getBranch().map((entry) => entry.id));
 		const latest = [...playlist].reverse().find((item) => branch.has(item.id) && item.role === "assistant");
@@ -71,7 +80,7 @@ export default function readAloud(pi: ExtensionAPI): void {
 			queue.push(text); if (queue.length > 100) queue.shift(); void pump();
 		}
 	});
-	const stop = async () => { queue = []; await reader.stop(); };
+	const stop = async () => { queue = []; await reader.stop(); await browser?.dispose(); };
 	pi.on("session_before_switch", stop);
 	pi.on("session_before_fork", stop);
 	pi.on("session_before_tree", stop);
@@ -79,6 +88,7 @@ export default function readAloud(pi: ExtensionAPI): void {
 		disposed = true; queue = []; range = undefined;
 		if (renderTimer) clearTimeout(renderTimer);
 		catalogAbort?.abort();
+		await closeBrowser?.(); closeBrowser = undefined; browser = undefined;
 		await reader.dispose(); await flushEdgeTtsSettings();
 		if (ctx.mode === "tui") { ctx.ui.setStatus(STATUS, undefined); ctx.ui.setWidget(STATUS, undefined); }
 		context = undefined; tui = undefined;
@@ -88,7 +98,8 @@ export default function readAloud(pi: ExtensionAPI): void {
 		description: "Read existing chat messages with Edge voices",
 		getArgumentCompletions: (prefix) => getTtsArgumentCompletions(prefix, reader.settingsSnapshot.voice, voices),
 		handler: async (args, ctx) => {
-			if (ctx.mode !== "tui") { ctx.ui.notify("Read-aloud requires Pi's terminal UI. Public extensions cannot play audio on a Pi Web viewing device.", "warning"); return; }
+			if (ctx.mode === "rpc") { const [action = "controls", ...parts] = args.trim().split(/\s+/u); requestBrowser(ctx, "tts", action || "controls", parts.join(" ")); return; }
+			if (ctx.mode !== "tui") { ctx.ui.notify("Read-aloud requires a terminal or the voice-enabled Pi Web integration.", "warning"); return; }
 			const [action = "", ...parts] = args.trim().split(/\s+/u);
 			const value = parts.join(" ");
 			switch (action.toLowerCase()) {

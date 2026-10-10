@@ -6,6 +6,8 @@ Uses `gpt-live-1-codex` for conversation and delegates coding tasks to the curre
 
 Terminal focus/FIFO arbitration controls microphone ownership. Dictation and Live cannot hold input concurrently within one session.
 
-Requires the terminal UI, Codex OAuth and native microphone/WebRTC bindings. Supported: Windows x64, Linux x64/arm64, macOS x64/arm64.
+Requires Codex OAuth. [Pi Web integration](https://github.com/khanra17/pi-extensions/tree/main/integration/pi-web) uses browser-owned microphone, WebRTC and playback over HTTPS. Use its Live button and mute/end controls.
+
+The terminal requires native microphone/WebRTC bindings. Supported: Windows x64, Linux x64/arm64, macOS x64/arm64.
 
 Preferences: `~/.pi/agent/pi-codex-voice-live.json`. See [third-party notices](THIRD_PARTY_NOTICES.md).

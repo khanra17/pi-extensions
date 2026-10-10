@@ -2,6 +2,7 @@ import { Text, type AutocompleteItem } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CodexVoiceAuth } from "../../shared/codex.ts";
 import { textContent } from "../../shared/messages.ts";
+import { requestBrowser } from "../../shared/browser.ts";
 import { LiveSessionController, type LiveSessionControllerOptions, type LiveTranscript } from "./controller.ts";
 import { buildLiveStartupContext } from "./context.ts";
 import { attachFocusReporting, probeFocusReporting, type FocusTerminalHandle } from "./focus.ts";
@@ -117,8 +118,9 @@ export function registerLiveVoice(
 	}
 
 	async function start(ctx: ExtensionContext): Promise<void> {
+		if (ctx.mode === "rpc") { requestBrowser(ctx, "live", "toggle"); return; }
 		if (ctx.mode !== "tui") {
-			ctx.ui.notify("Live voice requires Pi’s terminal UI. Public extensions cannot capture browser audio in Pi Web.", "warning");
+			ctx.ui.notify("Live voice requires a terminal or the voice-enabled Pi Web integration.", "warning");
 			return;
 		}
 		if (!ctx.hasUI) {
