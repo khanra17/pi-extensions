@@ -14,7 +14,7 @@ export interface VoiceHost {
 interface Settings { voice: string; speed: number; volume: number; muted: boolean; autoPlay: boolean; readCode: boolean; highlightEnabled: boolean }
 interface Voice { code: string; locale: string; name: string; friendlyName: string; gender?: string }
 interface Item { id: string; text: string; role: "user" | "assistant"; phase?: string }
-interface Run { kind: "dictation" | "live"; sid: string; id?: string; abort: AbortController; capture?: PcmCapture; stream?: MediaStream; peer?: RTCPeerConnection; audio?: HTMLAudioElement; timer?: ReturnType<typeof setTimeout>; maximum?: ReturnType<typeof setTimeout>; preview?: Promise<void>; draft?: ComposerDraft; recording?: boolean }
+interface Run { kind: "dictation" | "live"; sid: string; id?: string; abort: AbortController; capture?: PcmCapture; stream?: MediaStream; peer?: RTCPeerConnection; audio?: HTMLAudioElement; timer?: ReturnType<typeof setTimeout>; maximum?: ReturnType<typeof setTimeout>; preview?: Promise<void>; draft?: ComposerDraft; recording?: boolean; finalizing?: boolean }
 const defaultSettings: Settings = { voice: "en-US, AvaNeural", speed: 1, volume: 100, muted: false, autoPlay: false, readCode: false, highlightEnabled: true };
 function visibleItems(host: VoiceHost): Item[] {
   return host.messages.flatMap((message, index) => {
@@ -104,8 +104,9 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
   }, [raw, setBusy]);
   const stopDictation = useCallback(async () => {
     const current = run.current;
-    if (current?.kind !== "dictation" || !current.id || !current.capture) { cancelRun(); return; }
-    current.recording = false; clearTimeout(current.timer); clearTimeout(current.maximum);
+    if (current?.kind === "dictation" && current.finalizing) return;
+    if (current?.kind !== "dictation" || !current.recording || !current.id || !current.capture) { cancelRun(); return; }
+    current.finalizing = true; current.recording = false; clearTimeout(current.timer); clearTimeout(current.maximum);
     setPhase("transcribing");
     const audio = await current.capture.finish();
     if (run.current !== current) return;
