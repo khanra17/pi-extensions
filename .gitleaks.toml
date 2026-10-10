@@ -1,0 +1,11 @@
+title = "Pi extensions secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+condition = "AND"
+description = "Public Microsoft Edge client identifier; see read-aloud third-party notices"
+paths = ['''^packages/read-aloud/edge-read-aloud\.ts$''']
+regexTarget = "secret"
+regexes = ['''^6A5AA1D4EAFF4E9FB37E23D68491D6F4$''']
