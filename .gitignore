@@ -1,0 +1,6 @@
+node_modules/
+packages/*/package-lock.json
+*.log
+*.tgz
+.env*
+.DS_Store
