@@ -64,7 +64,7 @@ export default function dictation(pi: ExtensionAPI): void {
 				case "stop": if (voice.isRecording) await voice.stop(); else if (voice.snapshot.status === "starting") await voice.cancel(); break;
 				case "cancel": await voice.cancel(); break;
 				case "status": ctx.ui.notify(`Dictation: ${voice.snapshot.status} · ${recorderDescription()}`, "info"); break;
-				default: ctx.ui.notify("/voice [start|stop|cancel|status|corrections|help] · Alt+M toggles · Ctrl+X stops · Esc cancels. Live voice and fast mode are separate packages.", "info");
+				default: ctx.ui.notify("/voice [start|stop|cancel|status|corrections|help] · Alt+M toggles · Ctrl+X stops · Esc cancels.", "info");
 			}
 		},
 	});
