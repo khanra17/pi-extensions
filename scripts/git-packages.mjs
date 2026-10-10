@@ -58,7 +58,7 @@ export function generatePackageRefs({ cwd = process.cwd(), ref = "HEAD" } = {}) 
       });
       const tree = git(["write-tree"], { env });
       let previous;
-      try { previous = git(["rev-parse", "--verify", `refs/heads/${name}`]); } catch {}
+      try { previous = git(["rev-parse", "--verify", "--quiet", `refs/heads/${name}`]); } catch {}
       // No reference to the monorepo's history: only the selected package ships.
       if (previous && git(["rev-parse", `${previous}^{tree}`]) === tree) {
         results.push({ name, commit: previous, source });
