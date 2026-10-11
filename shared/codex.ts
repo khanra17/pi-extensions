@@ -19,6 +19,11 @@ interface CookieEntry {
 const cookieJars = new Map<string, Map<string, CookieEntry>>();
 const lastAffinityPrime = new Map<string, number>();
 
+export class CodexTranscriptionBlocked extends Error {
+	readonly code = "transcription_blocked";
+	readonly retryable = false;
+}
+
 export interface CodexVoiceAuth {
 	accessToken: string;
 	accountId: string;
@@ -114,9 +119,9 @@ async function parseTranscriptionResponse(response: Response): Promise<string> {
 		const detail = compact(await response.text().catch(() => ""));
 		if (response.status === 403 && isCloudflareChallenge(response)) {
 			const ray = response.headers.get("cf-ray");
-			throw new Error(
+			throw new CodexTranscriptionBlocked(
 				`OpenAI's transcription route was blocked by a Cloudflare challenge${ray ? ` (${ray})` : ""}. ` +
-					"Your Codex OAuth session is valid; signing in again will not fix this upstream endpoint issue.",
+					"This endpoint challenge does not ask you to sign in again. Choose Local Whisper in voice controls, or /voice backend local, to transcribe without this endpoint (first use downloads a model).",
 			);
 		}
 		if (response.status === 401) {
