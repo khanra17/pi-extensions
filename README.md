@@ -8,7 +8,7 @@ Previews upload growing WAV snapshots about every two seconds plus service laten
 
 ## Requirements
 
-Pi's Codex login (`/login`), or the selected OpenAI-compatible endpoint's existing credentials. Cockpit Tools uses its `/v1` base URL and account-scoped key; dictation calls `/audio/transcriptions` on that endpoint. A gateway failure never switches accounts or endpoints. [Pi Web integration](https://github.com/khanra17/pi-extensions/tree/main/integration/pi-web) captures the viewing device over HTTPS. Use the microphone button or Ctrl+Alt+M; hold the button to talk. It preserves the draft and never sends it.
+Select dictation's provider separately from chat and Live: `/voice provider openai` uses Pi's configured OpenAI-compatible endpoint/key; `/voice provider openai-codex` uses Pi's Codex login (`/login`, the default). `/voice provider` shows the current selection and opens its controls in Pi Web. The preference lives in `~/.pi/agent/pi-dictation.json` (provider ID only, never credentials). Cockpit Tools uses its `/v1` base URL and account-scoped key; dictation calls `/audio/transcriptions` on that endpoint. A gateway failure never switches accounts or endpoints. [Pi Web integration](https://github.com/khanra17/pi-extensions/tree/main/integration/pi-web) captures the viewing device over HTTPS. Use the microphone button or Ctrl+Alt+M; hold the button to talk. Its own panel contains the provider selector. Right-click the Mic button or use `/voice provider` to open controls without recording; the slash command also works on mobile. It preserves the draft and never sends it.
 
 In the terminal, Windows uses native capture; macOS/Linux require `ffmpeg`. The Windows file-only fallback cannot preview.
 
