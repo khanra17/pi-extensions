@@ -22,7 +22,7 @@ Run `/reload` after installation. To update, repeat its install command; to remo
 
 Use them in the terminal or with the [in-page Pi Web integration](integration/pi-web). In Pi Web, media uses the viewing device; stock Pi Web needs the integration build.
 
-Dictation and Live require Codex OAuth (`/login`). Their ChatGPT endpoints and Edge Read Aloud are unofficial.
+Dictation and Live use Pi's Codex login or the selected OpenAI-compatible model's configured endpoint and credentials (including Cockpit Tools). They never fall back to a different account. Read-aloud stays on Edge. The Codex voice protocol and Edge Read Aloud are unofficial.
 
 ## Development
 

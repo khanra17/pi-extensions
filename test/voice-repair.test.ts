@@ -6,8 +6,6 @@ import type { BrowserCall } from "../shared/browser.ts";
 import { claimMicrophone } from "../shared/microphone.ts";
 import { voiceShortcut, VOICE_SHORTCUTS } from "../shared/shortcuts.ts";
 import { waitForLivePeer } from "../integration/pi-web/client/media.ts";
-import { wavToLocalSamples, transcribeLocal } from "../packages/dictation/local.ts";
-import { pcmToWav } from "../packages/dictation/audio.ts";
 import { transcribeWithCodex, CodexTranscriptionBlocked } from "../shared/codex.ts";
 import { TranscriptPreview } from "../packages/dictation/preview.ts";
 const call = (action: string, client = "owner"): BrowserCall => ({ action, client, run: "run", body: { offer: "v=0\r\nfixture" }, signal: new AbortController().signal });
@@ -51,19 +49,12 @@ test("voice shortcuts use one modifier family, reject AltGraph and do not take o
   assert.equal(voiceShortcut({ ...event, getModifierState: key => key === "AltGraph" }), undefined);
   assert.deepEqual(Object.values(VOICE_SHORTCUTS), ["ctrl+alt+m", "ctrl+alt+l", "ctrl+alt+v"]);
 });
-test("local ASR uses 16kHz samples from bounded WAVs and respects cancellation before loading", async () => {
-  const samples = wavToLocalSamples(pcmToWav(new Uint8Array(48_000), 24_000));
-  assert.equal(samples.length, 16_000); assert.equal(samples.every(value => value === 0), true);
-  assert.throws(() => wavToLocalSamples(pcmToWav(new Uint8Array(100), 24_000)), /one second/);
-  const controller = new AbortController(); controller.abort(new Error("cancelled before loading"));
-  await assert.rejects(transcribeLocal(pcmToWav(new Uint8Array(48_000),24_000), controller.signal), /cancelled before loading/);
-});
 test("Cloudflare is an explicit non-retryable endpoint failure, not proof of valid credentials", async () => {
   const previous = globalThis.fetch;
   globalThis.fetch = async (input) => String(input).includes("/codex/models") ? new Response("{}") : new Response("challenge", { status: 403, headers: { "cf-mitigated": "challenge", "cf-ray": "fixture-ray" } });
   try {
     await assert.rejects(transcribeWithCodex(new Uint8Array(48_044), { ...await auth(), accountId: "challenge-test" }, new AbortController().signal), error => {
-      assert.ok(error instanceof CodexTranscriptionBlocked); assert.equal(error.retryable, false); assert.match(error.message, /Local Whisper/); assert.ok(!error.message.includes("session is valid")); return true;
+      assert.ok(error instanceof CodexTranscriptionBlocked); assert.equal(error.retryable, false); assert.match(error.message, /does not establish whether your credentials are valid/); assert.ok(!error.message.includes("Local Whisper")); assert.ok(!error.message.includes("session is valid")); return true;
     });
   } finally { globalThis.fetch = previous; }
 });

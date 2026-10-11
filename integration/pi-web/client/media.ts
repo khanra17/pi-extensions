@@ -79,22 +79,65 @@ export class PcmCapture {
 export async function* speechChunks(response: Response, signal: AbortSignal): AsyncGenerator<SpeechChunk> {
   if (!response.body) throw new Error("Speech stream is missing.");
   const reader = response.body.getReader(), decoder = new TextDecoder();
+  const abort = () => { void reader.cancel(signal.reason).catch(() => {}); };
+  signal.addEventListener("abort", abort, { once: true });
+  if (signal.aborted) abort();
   let pending = "";
   try {
     while (true) {
       if (signal.aborted) throw signal.reason;
       const { value, done } = await reader.read();
+      if (signal.aborted) throw signal.reason;
       if (done) break;
       pending += decoder.decode(value, { stream: true });
-      if (pending.length > 2 * 1024 * 1024) throw new Error("Speech stream exceeded its size limit.");
       let end;
       while ((end = pending.indexOf("\n")) >= 0) {
         const line = pending.slice(0, end); pending = pending.slice(end + 1);
+        if (line.length > 2 * 1024 * 1024) throw new Error("Speech chunk exceeded its size limit.");
         if (line.trim()) yield JSON.parse(line) as SpeechChunk;
       }
+      if (pending.length > 2 * 1024 * 1024) throw new Error("Speech chunk exceeded its size limit.");
     }
     if (pending.trim()) throw new Error("Incomplete speech stream.");
-  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+  } finally { signal.removeEventListener("abort", abort); await reader.cancel().catch(() => {}); reader.releaseLock(); }
+}
+
+/** Download the next five sentences independently of the current playback. */
+export async function playBufferedSpeech(response: Response, signal: AbortSignal,
+  play: (chunk: SpeechChunk, signal: AbortSignal) => Promise<void>): Promise<void> {
+  const controller = new AbortController(), linked = AbortSignal.any([signal, controller.signal]);
+  const queue: SpeechChunk[] = [];
+  let done = false, wake: (() => void) | undefined;
+  const notify = () => { wake?.(); wake = undefined; };
+  const changed = () => new Promise<void>(resolve => { wake = resolve; if (linked.aborted) notify(); });
+  linked.addEventListener("abort", notify);
+  const producer = (async () => {
+    try {
+      const chunks = speechChunks(response, linked);
+      try {
+        while (true) {
+          while (queue.length >= 5) { await changed(); linked.throwIfAborted(); }
+          linked.throwIfAborted();
+          const next = await chunks.next();
+          if (next.done) break;
+          queue.push(next.value); notify();
+        }
+        done = true; notify();
+      } finally { await chunks.return(undefined); }
+    } catch (error) { controller.abort(error); notify(); }
+  })();
+  try {
+    while (!done || queue.length) {
+      linked.throwIfAborted();
+      if (!queue.length) { await changed(); continue; }
+      const chunk = queue.shift()!; notify();
+      await play(chunk, linked);
+    }
+    linked.throwIfAborted();
+  } finally {
+    controller.abort(new Error("Speech playback ended.")); notify();
+    await producer; queue.length = 0; linked.removeEventListener("abort", notify);
+  }
 }
 export class SpeechPlayer {
   readonly audio = new Audio();
@@ -142,7 +185,7 @@ export class SpeechPlayer {
         const cleanup = () => { this.audio.removeEventListener("ended", done); this.audio.removeEventListener("error", fail); signal.removeEventListener("abort", abort); this.cancel = undefined; };
         const done = () => { cleanup(); resolve(); };
         const fail = () => { cleanup(); reject(new Error("The browser could not decode speech audio.")); };
-        const abort = () => { cleanup(); reject(signal.reason ?? new Error("Speech stopped.")); };
+        const abort = () => { this.audio.pause(); cleanup(); reject(signal.reason ?? new Error("Speech stopped.")); };
         this.cancel = abort;
         this.audio.addEventListener("ended", done, { once: true }); this.audio.addEventListener("error", fail, { once: true }); signal.addEventListener("abort", abort, { once: true });
         void this.audio.play().catch(error => { cleanup(); reject(new Error(`Tap Resume to allow browser audio: ${error.message}`)); });

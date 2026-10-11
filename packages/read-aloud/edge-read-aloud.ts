@@ -23,16 +23,13 @@ const VOICE_LIST_URL = `https://speech.platform.bing.com/consumer/speech/synthes
 const CHROMIUM_VERSION = "143.0.3650.75";
 const CHROMIUM_MAJOR_VERSION = "143";
 const MAX_TEXT_BYTES = 4096;
-// Independent Edge turns contain roughly 0.2s of leading and 0.3s of trailing
-// silence. Use substantial turns so ordinary sentence boundaries stay inside one
-// synthesis result instead of becoming audible file-to-file pauses.
-const INITIAL_TEXT_BYTES = 1800;
+// Split only oversized sentences to respect Edge's per-turn XML byte limit.
 const TARGET_TEXT_BYTES = 3600;
 const PLAYBACK_OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3";
 const EDGE_ORIGIN = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold";
 const SYNTHESIS_TIMEOUT_MS = 30_000;
-/** Synthesize the current part plus two look-ahead parts concurrently. */
-const SYNTHESIS_CONCURRENCY = 3;
+/** Start the first sentence alone, then prepare the next five. */
+const SYNTHESIS_CONCURRENCY = 5;
 const PUNCTUATION_MARKS = [
 	"\n",
 	".",
@@ -64,7 +61,11 @@ export interface SynthesisOptions {
 	voice: string;
 	signal?: AbortSignal;
 	onPlan?: (chunks: readonly string[]) => void;
+	/** Gate synthesis on the playback window; abort also releases pending gates. */
+	beforeChunk?: (index: number, signal: AbortSignal) => Promise<void>;
 	onChunk: (chunk: SynthesisChunk) => Promise<void> | void;
+	/** Injectable service boundary for deterministic scheduling tests. */
+	synthesizePart?: typeof synthesizePart;
 }
 
 export async function fetchVoices(signal?: AbortSignal): Promise<Voice[]> {
@@ -145,8 +146,7 @@ export function prepareSpeechText(text: string, readCode: boolean): string {
 export async function synthesizeChunks(
 	options: SynthesisOptions,
 ): Promise<void> {
-	const clean = escapeXml(removeIncompatibleCharacters(options.text));
-	const parts = splitTextForPlayback(clean);
+	const parts = planSpeechSentences(options.text).map(escapeXml);
 	if (parts.length === 0) throw new Error("Text is empty");
 	options.onPlan?.(parts.map(decodeXml));
 
@@ -219,13 +219,15 @@ export async function synthesizeChunks(
 				if (cancellation.signal.aborted) throw new Error("Stopped");
 				const index = nextPart++;
 				if (index >= parts.length) return;
-				const chunk = await synthesizePart(
+				await options.beforeChunk?.(index, cancellation.signal);
+				const chunk = await (options.synthesizePart ?? synthesizePart)(
 					parts[index] ?? "",
 					index,
 					parts.length,
 					options.voice,
 					cancellation.signal,
 				);
+				if (!chunk) throw new Error(`Edge Read Aloud returned no audio for sentence ${index + 1}.`);
 				results[index] = chunk;
 				ready[index] = true;
 				await publishReady();
@@ -237,7 +239,14 @@ export async function synthesizeChunks(
 	};
 
 	try {
-		const workerCount = Math.min(SYNTHESIS_CONCURRENCY, parts.length);
+		// Never put the first audible sentence behind look-ahead work.
+		await options.beforeChunk?.(0, cancellation.signal);
+		const first = await (options.synthesizePart ?? synthesizePart)(parts[0]!, 0, parts.length, options.voice, cancellation.signal);
+		if (cancellation.signal.aborted) throw new Error("Stopped");
+		if (!first) throw new Error("Edge Read Aloud returned no audio for the first sentence.");
+		await options.onChunk(first);
+		nextPart = nextToEmit = 1;
+		const workerCount = Math.min(SYNTHESIS_CONCURRENCY, parts.length - 1);
 		const workers = Array.from({ length: workerCount }, () => worker());
 		const settled = await Promise.allSettled(workers);
 		await emitTail.catch((error: unknown) => abortAll(error));
@@ -490,18 +499,21 @@ function decodeXml(text: string): string {
 		.replaceAll("&amp;", "&");
 }
 
-function splitTextForPlayback(text: string): string[] {
+/** Sentence boundaries include Unicode punctuation and do not split decimals. */
+export function planSpeechSentences(text: string): string[] {
+	const parts: string[] = [];
+	const clean = removeIncompatibleCharacters(text);
+	for (const { segment } of new Intl.Segmenter(undefined, { granularity: "sentence" }).segment(clean)) {
+		parts.push(...splitOversizedSentence(escapeXml(segment)).map(decodeXml));
+	}
+	return parts;
+}
+
+function splitOversizedSentence(text: string): string[] {
 	let remaining = Buffer.from(text, "utf8");
 	const parts: string[] = [];
-	const safeInitial = Math.min(
-		Math.max(INITIAL_TEXT_BYTES, 64),
-		MAX_TEXT_BYTES,
-	);
-	const safeMaximum = Math.min(
-		Math.max(TARGET_TEXT_BYTES, safeInitial),
-		MAX_TEXT_BYTES,
-	);
-	let limit = safeInitial;
+	const safeMaximum = Math.min(TARGET_TEXT_BYTES, MAX_TEXT_BYTES);
+	const limit = safeMaximum;
 
 	while (remaining.length > 0) {
 		if (remaining.length <= limit) {
@@ -519,9 +531,6 @@ function splitTextForPlayback(text: string): string[] {
 
 		pushTrimmed(parts, remaining.subarray(0, splitAt));
 		remaining = remaining.subarray(splitAt);
-		// The first turn is moderately sized for startup latency; all prefetched
-		// turns after it use the large target to minimize transition boundaries.
-		limit = safeMaximum;
 	}
 
 	return parts;

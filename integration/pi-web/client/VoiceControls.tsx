@@ -2,7 +2,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ComposerDraft, joinAtCursor, type ComposerPort } from "@/lib/pi-voice-composer";
 import { assistantText, textContent, messagePhase, isRecord } from "@/lib/pi-voice-messages";
-import { PcmCapture, SpeechPlayer, speechChunks, markWord, clearWord, waitForLivePeer } from "./media";
+import { PcmCapture, SpeechPlayer, playBufferedSpeech, markWord, clearWord, waitForLivePeer } from "./media";
 import { voiceShortcut, VOICE_SHORTCUT_LABELS } from "@/lib/pi-voice-shortcuts";
 import "./voice.css";
 
@@ -45,14 +45,13 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
   const mounted = useRef(true);
   const [features, setFeatures] = useState<string[] | null>(null);
   const [phase, setPhase] = useState("idle"), [message, setMessage] = useState(""), [error, setError] = useState("");
-  const [backend, setBackend] = useState("codex");
-  const [panel, setPanel] = useState(false), [playing, setPlaying] = useState(false), [paused, setPaused] = useState(false);
+  const [panel, setPanel] = useState<"dictation" | "live" | "tts" | null>(null), [playing, setPlaying] = useState(false), [paused, setPaused] = useState(false);
   const [muted, setMuted] = useState(false), [settings, setSettings] = useState(defaultSettings);
   const [voices, setVoices] = useState<Voice[]>([]), [search, setSearch] = useState(""), [language, setLanguage] = useState("");
   const [word, setWord] = useState("");
   const hold = useRef<ReturnType<typeof setTimeout> | undefined>(undefined), held = useRef(false);
   const eventHandler = useRef<(event: { feature: string; type: string; data: Record<string, unknown>; run?: string }) => void>(() => {});
-  const fail = useCallback((error: unknown) => { if (mounted.current) { setError(error instanceof Error ? error.message : String(error)); setPanel(true); } }, []);
+  const fail = useCallback((error: unknown) => { if (mounted.current) { setError(error instanceof Error ? error.message : String(error)); } }, []);
   const raw = useCallback(async (session: string, feature: string, action: string, body: unknown = {}, signal?: AbortSignal, owned?: string, keepalive = false): Promise<Response> => {
     client.current ??= crypto.randomUUID();
     const wav = body instanceof Uint8Array;
@@ -82,7 +81,6 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
       const stream = events.current = new EventSource(`/api/pi-voice/v1/${encodeURIComponent(session)}?events=1&client=${client.current}`);
       stream.onmessage = event => { try { eventHandler.current(JSON.parse(event.data)); } catch (error) { fail(error); } };
       stream.onerror = () => { if (run.current) setMessage("Voice status connection interrupted; reconnecting…"); };
-      if (info.features.includes("dictation")) { const value = await (await raw(session, "dictation", "settings")).json(); if (token === generation.current) setBackend(value.backend); }
       if (info.features.includes("tts")) {
         const value = await (await raw(session, "tts", "settings")).json() as Settings;
         if (token === generation.current) { settingsRef.current = value; setSettings(value); }
@@ -125,7 +123,7 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
   const dictate = useCallback(async () => {
     if (run.current?.kind === "dictation") { await stopDictation(); return; }
     if (run.current) { fail(new Error("Stop Live before starting dictation.")); return; }
-    stopSpeech(); setError(""); setMessage(""); setPhase("starting"); setBusy(true);
+    stopSpeech(); setError(""); setMessage(""); setPhase("starting"); setPanel("dictation"); setBusy(true);
     const capture = new PcmCapture(), abort = new AbortController();
     const current: Run = { kind: "dictation", sid: "", id: crypto.randomUUID(), abort, capture };
     current.maximum = setTimeout(() => { if (run.current !== current) return; if (current.recording) void stopDictation(); else { cancelRun(); fail(new Error("Microphone setup timed out.")); } }, 120_000);
@@ -159,7 +157,7 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
     if (run.current?.kind === "live") { cancelRun(); return; }
     if (run.current) { fail(new Error("Stop dictation before starting Live.")); return; }
     if (!isSecureContext || !navigator.mediaDevices?.getUserMedia) { fail(new Error("Live microphone access requires HTTPS (or localhost).")); return; }
-    stopSpeech(); setError(""); setMessage(""); setPhase("connecting"); setPanel(true);
+    stopSpeech(); setError(""); setMessage(""); setPhase("connecting"); setPanel("live");
     const current: Run = { kind: "live", sid: "", id: crypto.randomUUID(), abort: new AbortController() }; run.current = current;
     current.maximum = setTimeout(() => { if (run.current === current) { cancelRun(); fail(new Error("Live setup timed out. Check microphone permission and this device's network.")); } }, 90_000);
     try {
@@ -169,7 +167,7 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
       const output = current.audio = new Audio(); output.autoplay = true;
       const peer = current.peer = new RTCPeerConnection();
       stream.getTracks().forEach(track => peer.addTrack(track, stream));
-      peer.ontrack = event => { output.srcObject = event.streams[0] ?? new MediaStream([event.track]); void output.play().catch(() => { if (run.current === current) { setMessage("Tap Resume audio to allow Live playback."); setPanel(true); } }); };
+      peer.ontrack = event => { output.srcObject = event.streams[0] ?? new MediaStream([event.track]); void output.play().catch(() => { if (run.current === current) { setMessage("Tap Resume audio to allow Live playback."); setPanel("live"); } }); };
       peer.onconnectionstatechange = () => { if (["failed", "closed"].includes(peer.connectionState) && run.current === current) { const detail = `Live WebRTC ended (peer ${peer.connectionState}, ICE ${peer.iceConnectionState}). Check this device's network.`; cancelRun(); fail(new Error(detail)); } };
       const channel = peer.createDataChannel("oai-events");
       channel.onmessage = event => {
@@ -207,11 +205,12 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
         try {
           const session = await initialize();
           audio.playbackRate = settingsRef.current.speed; audio.volume = settingsRef.current.volume / 100; audio.muted = settingsRef.current.muted;
-          const response = await raw(session, "tts", "speak", { text: item.text }, abort.signal, owned);
-          for await (const chunk of speechChunks(response, abort.signal)) {
-            await player.current.play(chunk, abort.signal, word => { setWord(word); if (settingsRef.current.highlightEnabled) markWord(hostRef.current?.textElements(item.id) ?? [], word, cursor); });
-          }
-        } catch (error) { if (!abort.signal.aborted) { fail(error); queue.current = []; } }
+          const response = await raw(session, "tts", "speak", { entryId: item.id }, abort.signal, owned);
+          await playBufferedSpeech(response, abort.signal, async (chunk, signal) => {
+            if (chunk.index > 0) void raw(session, "tts", "progress", { index: chunk.index }, abort.signal, owned).catch(error => { if (!abort.signal.aborted) abort.abort(error); });
+            await player.current!.play(chunk, signal, word => { setWord(word); if (settingsRef.current.highlightEnabled) markWord(hostRef.current?.textElements(item.id) ?? [], word, cursor); });
+          });
+        } catch (error) { if (!abort.signal.aborted || (abort.signal.reason instanceof Error && !(abort.signal.reason instanceof DOMException))) { fail(error); queue.current = []; player.current?.stop(); } }
         finally { clearWord(); if (speechAbort.current === abort) speechAbort.current = undefined;
           if (sid.current) void raw(sid.current, "tts", "stop", {}, undefined, owned).catch(() => {});
           if (speechRun.current === owned) speechRun.current = undefined; }
@@ -247,8 +246,8 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
       if (event.data?.error) fail(new Error(String(event.data.error)));
     }
     if (event.type === "request") {
-      const action = String(event.data.action).toLowerCase(), args = String(event.data.args ?? "").trim(); setPanel(true);
-      if (event.feature === "dictation" && action === "backend") { void raw(sid.current!, "dictation", "configure", { backend: args }).then(response => response.json()).then(value => setBackend(value.backend)).catch(fail); return; }
+      const action = String(event.data.action).toLowerCase(), args = String(event.data.args ?? "").trim();
+      if (["dictation", "live", "tts"].includes(event.feature)) setPanel(event.feature as "dictation" | "live" | "tts");
       if (event.feature === "dictation" && action === "stop" && run.current?.kind === "dictation") { void stopDictation(); return; }
       if (["stop", "cancel"].includes(action)) { if (event.feature === "tts") stopSpeech(); else cancelRun(); return; }
       if (event.feature === "tts") {
@@ -299,8 +298,8 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
     const key = (event: KeyboardEvent) => {
       if (event.repeat || event.defaultPrevented || event.isComposing || document.querySelector('[role="dialog"][aria-modal="true"]')) return;
       const action = voiceShortcut(event);
-      if (action) { event.preventDefault(); if (action === "dictation") void dictate(); else if (action === "live") void live(); else setPanel(value => !value); }
-      if (event.key === "Escape") setPanel(false);
+      if (action) { event.preventDefault(); if (action === "dictation") void dictate(); else if (action === "live") void live(); else setPanel(value => value === "tts" ? null : "tts"); }
+      if (event.key === "Escape") setPanel(null);
       if (event.key === "Escape" && run.current) { event.preventDefault(); cancelRun(); }
     };
     document.addEventListener("visibilitychange", hide); document.addEventListener("keydown", key);
@@ -315,16 +314,16 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
   return <div className="pi-voice-controls" data-voice-version="1">
     {enabled("dictation") && <button type="button" className={run.current?.kind === "dictation" ? "active recording" : ""} aria-label={run.current?.kind === "dictation" ? "Stop dictation" : "Start dictation"} title={`Dictation · tap to toggle, hold to talk · ${VOICE_SHORTCUT_LABELS.dictation}`}  onPointerDown={() => { held.current = false; hold.current = setTimeout(() => { held.current = true; if (!run.current) void dictate(); }, 300); }} onPointerUp={() => { clearTimeout(hold.current); if (held.current) void stopDictation(); }} onPointerCancel={() => { clearTimeout(hold.current); if (held.current) cancelRun(); }} onKeyDown={event => { if (event.code === "Space" && !event.ctrlKey && !event.altKey) { event.preventDefault(); if (!event.repeat) { held.current = true; if (!run.current) void dictate(); } } }} onKeyUp={event => { if (event.code === "Space" && held.current) { event.preventDefault(); void stopDictation(); } }} onContextMenu={event => event.preventDefault()} onClick={() => { if (!held.current) void dictate(); }} disabled={phase === "transcribing"}>{icon("mic")}</button>}
     {enabled("live") && <button type="button" className={run.current?.kind === "live" ? "active" : ""} aria-label={run.current?.kind === "live" ? "Stop Live voice" : "Start Live voice"} title={`Live conversation · ${VOICE_SHORTCUT_LABELS.live}`}  onClick={() => void live()}>{icon("live")}</button>}
-    <button type="button" className={playing ? "active" : ""} aria-label={enabled("tts") ? "Read aloud" : "Voice controls"} aria-expanded={panel} title={enabled("tts") ? "Read-aloud controls · Ctrl+Alt+V" : "Voice controls · Ctrl+Alt+V"} onClick={() => { setPanel(value => !value); void initialize().catch(fail); }}>{icon(enabled("tts") ? "speaker" : "settings")}</button>
+    {enabled("tts") && <button type="button" className={playing ? "active" : ""} aria-label="Read aloud" aria-expanded={panel === "tts"} title="Read-aloud controls · Ctrl+Alt+V" onClick={() => { setPanel(value => value === "tts" ? null : "tts"); void initialize().catch(fail); }}>{icon("speaker")}</button>}
     {(busy || message || error) && <span className="pi-voice-indicator" title={error || message || phase}>{error ? "Voice error" : busy ? phase : ""}</span>}
-    {error && !panel && <div className="pi-voice-alert" role="alert"><strong>Voice error</strong><p>{error}</p><button type="button" onClick={() => setPanel(true)}>Open controls</button><button type="button" aria-label="Dismiss voice error" onClick={() => setError("")}>Dismiss</button></div>}
-    {panel && <section className="pi-voice-panel" role="region" aria-label="Voice controls panel">
-      <header><strong>Voice</strong><button type="button" aria-label="Close voice controls" onClick={() => setPanel(false)}>×</button></header>
-      <p role={error ? "alert" : "status"}>{error || message || (phase === "idle" ? "Audio uses this device." : phase)}</p>
-      {error && <button type="button" aria-label="Dismiss voice error" onClick={() => setError("")}>Dismiss error</button>}
-      {enabled("dictation") && <label>Dictation <select aria-label="Dictation backend" value={backend} disabled={run.current?.kind === "dictation"} onChange={event => { const chosen = event.currentTarget.value; void initialize().then(session => raw(session, "dictation", "configure", { backend: chosen })).then(response => response.json()).then(value => { setBackend(value.backend); setError(""); setMessage(value.backend === "local" ? "Local Whisper: first recording downloads a public model; inference uses server CPU, not server microphone/speakers. English by default (PI_DICTATION_LANGUAGE changes language)." : "Codex OAuth transcription selected."); }).catch(fail); }}><option value="codex">Codex OAuth</option><option value="local">Local Whisper (no API key)</option></select></label>}
-      {busy && <div className="pi-voice-actions"><button type="button" onClick={cancelRun}>Cancel / End</button>{run.current?.kind === "live" && <><button type="button" onClick={() => { const current = run.current!; current.stream?.getAudioTracks().forEach(track => { track.enabled = muted; }); setMuted(!muted); if (current.id) void raw(current.sid, "live", "mute", {}, undefined, current.id).catch(fail); }}>{muted ? "Unmute" : "Mute"}</button><button type="button" onClick={() => { void run.current?.audio?.play().catch(fail); }}>Resume audio</button></>}</div>}
-      {enabled("tts") && <>
+    <div className="pi-voice-popovers">
+    {error && <div className="pi-voice-alert" role="alert"><strong>Voice error</strong><p>{error}</p><button type="button" aria-label="Dismiss voice error" onClick={() => setError("")}>Dismiss</button></div>}
+    {panel && enabled(panel) && <section className="pi-voice-panel" role="region" aria-label={panel === "tts" ? "Read-aloud controls" : panel === "live" ? "Live controls" : "Dictation controls"}>
+      <header><strong>{panel === "tts" ? "Read aloud" : panel === "live" ? "Live" : "Dictation"}</strong><button type="button" aria-label="Close voice controls" onClick={() => setPanel(null)}>×</button></header>
+      {panel === "dictation" && <><p role="status">{run.current?.kind === "dictation" ? phase : message || "Tap the microphone to dictate. Your draft stays editable; nothing is sent."}</p>{run.current?.kind === "dictation" && <div className="pi-voice-actions"><button type="button" disabled={phase !== "recording"} onClick={() => void stopDictation()}>Finish dictation</button><button type="button" onClick={cancelRun}>Cancel dictation</button></div>}</>}
+      {panel === "live" && <><p role="status">{run.current?.kind === "live" ? message || phase : "Live conversation uses this device's microphone and speakers."}</p>{run.current?.kind === "live" && <div className="pi-voice-actions"><button type="button" onClick={cancelRun}>End Live</button><button type="button" onClick={() => { const current = run.current!; current.stream?.getAudioTracks().forEach(track => { track.enabled = muted; }); setMuted(!muted); if (current.id) void raw(current.sid, "live", "mute", {}, undefined, current.id).catch(fail); }}>{muted ? "Unmute" : "Mute"}</button><button type="button" onClick={() => { void run.current?.audio?.play().catch(fail); }}>Resume audio</button></div>}</>}
+      {panel === "tts" && <>
+        <p role="status">{playing ? paused ? "Paused" : "Reading…" : "Audio plays on this device."}</p>
         <div className="pi-voice-actions"><button type="button" onClick={() => speak(-1)}>Previous</button><button type="button" onClick={() => { if (playing) { if (paused) { void player.current?.resume().catch(fail); setPaused(false); } else { player.current?.pause(); setPaused(true); } } else speak(); }}>{playing ? paused ? "Resume" : "Pause" : "Play"}</button><button type="button" onClick={stopSpeech}>Stop</button><button type="button" onClick={() => speak(1)}>Next</button></div>
         {word && <p className="pi-voice-word" aria-live="off">{word}</p>}
         <label>Voice <button type="button" aria-label="Browse voices" onClick={async () => { try { setVoices(await (await raw(await initialize(), "tts", "voices")).json()); } catch (error) { fail(error); } }}>Browse voices</button></label>
@@ -337,5 +336,6 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
         <label><input type="checkbox" checked={settings.highlightEnabled} onChange={event => void configure({ highlightEnabled: event.target.checked })}/>Highlight spoken prose</label>
       </>}
     </section>}
+    </div>
   </div>;
 }

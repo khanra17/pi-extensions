@@ -76,7 +76,7 @@ export class VoiceController implements VoiceStateLike {
 		const abort = this.abort = new AbortController();
 		this.clearTimers();
 		this.meter.reset();
-		this.publish({ status: "starting", frame: 0, message: "Checking Codex sign-in…" });
+		this.publish({ status: "starting", frame: 0, message: "Checking voice provider…" });
 		this.ticker = setInterval(() => {
 			if (generation === this.generation && this.isBusy) this.publish({ ...this.current, frame: this.current.frame + 1 });
 		}, 100);
@@ -167,7 +167,7 @@ export class VoiceController implements VoiceStateLike {
 			if (recorder.onPcmChunk) {
 				const preview = hasPreview ? new TranscriptPreview({
 					transcribe: (audio, signal) => this.dependencies.transcribe(audio, auth, signal, message => { if (this.isCurrent(generation, abort) && this.isRecording) this.publish({ ...this.current, message }); }),
-					timeoutMs: "backend" in auth ? 180_000 : 8_000,
+					timeoutMs: 8_000,
 					intervalMs: this.dependencies.previewIntervalMs,
 					onText: (text) => {
 						if (this.isCurrent(generation, abort) && this.isRecording) this.publish({ ...this.current, liveText: applyVoiceDictionary(text, dictionary), message: "Listening · composer preview" });

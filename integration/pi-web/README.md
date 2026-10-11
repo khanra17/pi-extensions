@@ -27,12 +27,16 @@ Keep the existing HTTPS proxy/password configuration and reload the page. Mobile
 
 - Microphone: tap to toggle or hold to talk. Ctrl+Alt+M toggles; Esc cancels. Drafts remain editable; recording/finalizing cannot submit them.
 - Live: click its button or Ctrl+Alt+L; mute/end controls stay in the page. `/live voice` selects the response voice through Pi Web's extension dialog.
-- Speaker: the single playback/settings launcher; opening it does not start speech. Press Play inside. Adjacent-message controls and searchable voices are in the same panel. Pause holds the queue; Stop clears it. Auto-read speaks new visible assistant updates/finals, not thinking or tool data. Without read-aloud installed, a generic controls icon takes its place.
-- Ctrl+Alt+V opens the panel. Closing it leaves speech playing; hiding the page stops media. Composer/session/tree changes are fenced against late results.
+- Speaker: the single playback/settings launcher; opening it does not start speech. Press Play inside. Adjacent-message controls and searchable voices are in the same panel. Pause holds the queue; Stop clears it. Auto-read speaks new visible assistant updates/finals, not thinking or tool data. The panel contains only read-aloud controls. Dictation and Live have their own panels; absent extensions have no launcher.
+- Ctrl+Alt+V opens read-aloud controls. Closing it leaves speech playing; hiding the page stops media. Composer/session/tree changes are fenced against late results.
 
 Voice shortcuts use Ctrl+Alt+M/L/V in CLI and web, leaving Ctrl+Space (IME), Ctrl+X (clipboard) and Ctrl+Shift+L (browser) alone. AltGraph input is ignored; OS/custom bindings and terminals can still differ, so buttons/slash commands remain the fallback.
 
-Failures open an accessible error panel and remain visible after closing it. Dictation preview failures show their actual cause, not a generic delay. Choose **Local Whisper** in that panel or `/voice backend local` when Codex transcription is challenged: about 42 MiB of public model files download on first use, then CPU inference stays local. English by default; `PI_DICTATION_LANGUAGE` selects another Whisper language. No automatic switch or API-key/paid backend is used.
+Failures remain visible in a separate accessible alert, even with controls closed. Preview failures show their actual cause, not a generic delay. No local backend or model download is included.
+
+Dictation and Live use Pi's Codex login or the selected OpenAI-compatible model's configured endpoint/key. For Cockpit Tools, keep its `/v1` base URL and scoped key in Pi's existing provider configuration. Transcription, Live bootstrap and sideband all stay on that gateway; failed requests never fall back to another account.
+
+Read-aloud starts with the first sentence and buffers the next five. Long replies are referenced by session entry ID, not uploaded as giant control requests or rejected at 12,000 characters. Pause preserves bounded buffering; Stop cancels it.
 
 Slash commands open the browser controls; microphone/audio permission is granted with a viewing-device gesture. Terminal controls remain independent.
 
@@ -50,6 +54,6 @@ npm run test:browser
 
 ## Verification
 
-56 focused tests and the production build pass. Isolated Chromium desktop/mobile-layout smoke covers growing WAV previews, final replacement, user edits, no auto-send, real MP3 decoding, prose highlighting, voice search, browser-to-browser WebRTC and stopped microphone tracks. ASR/signaling use fixtures; an actual Edge MP3 was synthesized separately. Production dependencies audited with zero reported vulnerabilities; upstream development dependencies reported 13.
+70 focused tests and the production build pass. Isolated Chromium desktop/mobile-layout smoke covers growing WAV previews, final replacement, user edits, no auto-send, real MP3 decoding, prose highlighting, voice search, browser-to-browser WebRTC and stopped microphone tracks. ASR/signaling use fixtures, with gateway HTTP/WebSocket contract tests and long-reply/rolling-buffer tests; actual Edge synthesis also returned the first-sentence MP3 in about 1.5 seconds in one probe and prepared five following sentences. This is an observed network result, not a latency guarantee. Production dependencies audited with zero reported vulnerabilities; upstream development dependencies reported 13.
 
-A separate browser probe completed a fresh real Codex Live signaling/WebRTC/data-channel/sideband handshake with a valid voice and test microphone, and real local CPU transcription of a public WAV passed. Those do not certify a physical phone, Safari media, or live real-microphone audio quality. Playwright's Windows WebKit build lacks the required media APIs and cannot provide that certification.
+A separate browser probe completed a fresh real Codex Live signaling/WebRTC/data-channel/sideband handshake with a valid voice and test microphone, using Pi's Codex login. Those do not certify a physical phone, Safari media, or live real-microphone audio quality. Playwright's Windows WebKit build lacks the required media APIs and cannot provide that certification.
