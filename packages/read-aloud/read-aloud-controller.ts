@@ -6,6 +6,7 @@ import {
 	type SynthesisChunk,
 } from "./edge-read-aloud.ts";
 import { AutomaticAudioPlayer } from "./playback-engine.ts";
+import { SpeechWindow } from "./speech-window.ts";
 import {
 	DEFAULT_SETTINGS,
 	normalizeReaderSettings,
@@ -91,6 +92,7 @@ export class EdgeReadAloudController {
 	private activePlayerJob: number | undefined;
 	private job = 0;
 	private abortController: AbortController | undefined;
+	private synthesisWindow: SpeechWindow | undefined;
 	private runPromise: Promise<void> | undefined;
 	private finishTimer: ReturnType<typeof setTimeout> | undefined;
 	private player: AudioPlayer | undefined;
@@ -320,6 +322,7 @@ export class EdgeReadAloudController {
 		signal: AbortSignal,
 	): Promise<void> {
 		const player = this.getPlayer();
+		const window = this.synthesisWindow = new SpeechWindow();
 		try {
 			this.activePlayerJob = job;
 			await player.start();
@@ -331,6 +334,7 @@ export class EdgeReadAloudController {
 				text: speechText,
 				voice: this.settings.voice,
 				signal,
+				beforeChunk: (index, abort) => window.wait(index, abort),
 				onPlan: (chunks) => {
 					if (!this.isCurrentJob(job)) return;
 					this.recordPlan(speechText, chunks);
@@ -430,6 +434,7 @@ export class EdgeReadAloudController {
 		if (!this.player) {
 			this.player = new AutomaticAudioPlayer({
 				onUpdate: (state) => {
+					if (this.activePlayerJob !== undefined && state.fileIndex !== undefined) this.synthesisWindow?.advance(state.fileIndex);
 					this.timePos = state.audioTimePos ?? state.timePos;
 					this.duration = state.duration;
 					if (state.fileIndex !== undefined)
