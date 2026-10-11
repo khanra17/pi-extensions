@@ -1,13 +1,13 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { requireOwner, emitBrowser, type BrowserAdapter, type BrowserCall } from "../../shared/browser.ts";
 import { claimMicrophone } from "../../shared/microphone.ts";
-import { resolveCodexVoiceAuth, transcribeWithCodex } from "../../shared/codex.ts";
+import { resolveDictationAuth, transcribeDictation, dictationSettings, setDictationBackend } from "./backend.ts";
 import { applyVoiceDictionary, loadVoiceDictionary } from "./dictionary.ts";
 import { prepareWavForTranscription } from "./audio.ts";
 
 interface Run {
   id: string; client: string; abort: AbortController; release(): void;
-  auth?: Awaited<ReturnType<typeof resolveCodexVoiceAuth>>;
+  auth?: Awaited<ReturnType<typeof resolveDictationAuth>>;
   dictionary?: Awaited<ReturnType<typeof loadVoiceDictionary>>;
   pending: Set<Promise<unknown>>; final?: Promise<unknown>; timer?: ReturnType<typeof setTimeout>;
 }
@@ -15,14 +15,16 @@ export class BrowserDictation implements BrowserAdapter {
   private run?: Run;
   isActive(): boolean { return Boolean(this.run); }
   constructor(private readonly ctx: ExtensionContext, private readonly deps = {
-    auth: resolveCodexVoiceAuth, transcribe: transcribeWithCodex, dictionary: loadVoiceDictionary,
+    auth: resolveDictationAuth, transcribe: transcribeDictation, dictionary: loadVoiceDictionary,
   }) {}
   async handle(call: BrowserCall): Promise<unknown> {
+    if (call.action === "settings") return dictationSettings();
+    if (call.action === "configure") { if (this.run) throw new Error("Stop dictation before changing its backend."); return setDictationBackend(call.body.backend); }
     if (call.action === "start") {
       if (this.run) throw new Error("A microphone run is already active. Stop it first.");
       const run: Run = { id: call.run ?? crypto.randomUUID(), client: call.client, abort: new AbortController(), release: claimMicrophone(this.ctx.sessionManager.getSessionId(), "dictation"), pending: new Set() };
       this.run = run;
-      run.timer = setTimeout(() => { void this.cancel(); }, 200_000);
+      run.timer = setTimeout(() => { void this.cancel(); }, 360_000);
       run.timer.unref?.();
       try {
         run.auth = await this.deps.auth(this.ctx);
@@ -41,9 +43,9 @@ export class BrowserDictation implements BrowserAdapter {
     if (!call.audio || call.audio.byteLength > 6 * 1024 * 1024) throw new Error("A bounded WAV recording is required.");
     const prepared = prepareWavForTranscription(call.audio);
     if (prepared.audio.byteLength < 48_044 || prepared.audio.byteLength > 44 + 120 * 24_000 * 2) throw new Error("Record between one second and two minutes.");
-    const signal = AbortSignal.any([call.signal, run.abort.signal, AbortSignal.timeout(call.action === "preview" ? 8_000 : 60_000)]);
+    const signal = AbortSignal.any([call.signal, run.abort.signal, AbortSignal.timeout(run.auth && "backend" in run.auth ? 180_000 : call.action === "preview" ? 8_000 : 60_000)]);
     const operation = (async () => {
-      const transcript = await this.deps.transcribe(prepared.audio, run.auth!, signal);
+      const transcript = await this.deps.transcribe(prepared.audio, run.auth!, signal, message => { if (this.run === run && !signal.aborted) emitBrowser(this.ctx.sessionManager.getSessionId(), "dictation", "status", { message }, run.client, run.id); });
       if (this.run !== run || run.abort.signal.aborted || signal.aborted) throw new Error("Transcription cancelled.");
       return { text: applyVoiceDictionary(transcript, run.dictionary!) };
     })();

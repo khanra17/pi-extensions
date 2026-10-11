@@ -20,6 +20,9 @@
       "./packages/dictation/index.ts"
     ]
   },
+  "optionalDependencies": {
+    "@huggingface/transformers": "4.3.1"
+  },
   "files": [
     "packages/dictation/*.ts",
     "shared/*.ts",

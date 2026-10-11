@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { resolveCodexVoiceAuth, transcribeWithCodex, type CodexVoiceAuth } from "../../shared/codex.ts";
+import { resolveDictationAuth, transcribeDictation, type DictationAuth } from "./backend.ts";
 import { claimMicrophone } from "../../shared/microphone.ts";
 import { Pcm16RmsMeter, prepareWavForTranscription } from "./audio.ts";
 import { applyVoiceDictionary, loadVoiceDictionary, type VoiceDictionary } from "./dictionary.ts";
@@ -9,17 +9,17 @@ import type { VoiceSnapshot, VoiceStateLike } from "./ui.ts";
 
 interface Recording {
 	ctx: ExtensionContext;
-	auth: CodexVoiceAuth;
+	auth: DictationAuth;
 	dictionary: VoiceDictionary;
 	insert(text: string): void;
 	startedAt: number;
 }
 
 interface Dependencies {
-	auth: typeof resolveCodexVoiceAuth;
+	auth: typeof resolveDictationAuth;
 	dictionary: typeof loadVoiceDictionary;
 	record: typeof createAudioRecorder;
-	transcribe: typeof transcribeWithCodex;
+	transcribe: typeof transcribeDictation;
 	now(): number;
 	previewIntervalMs?: number;
 }
@@ -45,7 +45,7 @@ export class VoiceController implements VoiceStateLike {
 	private readonly dependencies: Dependencies;
 
 	constructor(dependencies: Partial<Dependencies> = {}) {
-		this.dependencies = { auth: resolveCodexVoiceAuth, dictionary: loadVoiceDictionary, record: createAudioRecorder, transcribe: transcribeWithCodex, now: Date.now, ...dependencies };
+		this.dependencies = { auth: resolveDictationAuth, dictionary: loadVoiceDictionary, record: createAudioRecorder, transcribe: transcribeDictation, now: Date.now, ...dependencies };
 	}
 
 	get snapshot(): VoiceSnapshot { return this.current; }
@@ -107,7 +107,7 @@ export class VoiceController implements VoiceStateLike {
 				if (!this.isCurrent(generation, abort)) return;
 				if (duration < 1_000) throw new Error("Recording was too short. Speak for at least one second.");
 				const audio = prepareWavForTranscription(raw).audio;
-				const text = applyVoiceDictionary(await this.dependencies.transcribe(audio, recording.auth, abort.signal), recording.dictionary);
+				const text = applyVoiceDictionary(await this.dependencies.transcribe(audio, recording.auth, abort.signal, message => { if (this.isCurrent(generation, abort)) this.publish({ ...this.current, message }); }), recording.dictionary);
 				if (!this.isCurrent(generation, abort)) return;
 				recording.insert(text);
 				this.endActivity();
@@ -166,13 +166,18 @@ export class VoiceController implements VoiceStateLike {
 			this.publish({ status: "recording", frame: 0, rms: 0, startedAt, message: hasPreview ? "Listening · updating composer…" : "Listening · transcript on stop" });
 			if (recorder.onPcmChunk) {
 				const preview = hasPreview ? new TranscriptPreview({
-					transcribe: (audio, signal) => this.dependencies.transcribe(audio, auth, signal),
+					transcribe: (audio, signal) => this.dependencies.transcribe(audio, auth, signal, message => { if (this.isCurrent(generation, abort) && this.isRecording) this.publish({ ...this.current, message }); }),
+					timeoutMs: "backend" in auth ? 180_000 : 8_000,
 					intervalMs: this.dependencies.previewIntervalMs,
 					onText: (text) => {
 						if (this.isCurrent(generation, abort) && this.isRecording) this.publish({ ...this.current, liveText: applyVoiceDictionary(text, dictionary), message: "Listening · composer preview" });
 					},
-					onUnavailable: () => {
-						if (this.isCurrent(generation, abort) && this.isRecording) this.publish({ ...this.current, message: "Listening · preview delayed; final transcript on stop" });
+					onUnavailable: error => {
+						if (this.isCurrent(generation, abort) && this.isRecording) {
+							const message = `Preview failed: ${errorMessage(error)} · Recording continues.`;
+							this.publish({ ...this.current, message });
+							if ((error as { retryable?: boolean })?.retryable === false) ctx.ui.notify(message, "error");
+						}
 					},
 				}) : undefined;
 				this.preview = preview;

@@ -2,6 +2,8 @@ import { CustomEditor, type ExtensionAPI, type ExtensionContext, type Keybinding
 import { isKeyRelease, isKeyRepeat, matchesKey, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 import { VoiceController } from "./controller.ts";
 import { BrowserDictation } from "./browser.ts";
+import { dictationSettings, setDictationBackend } from "./backend.ts";
+import { VOICE_SHORTCUTS, VOICE_SHORTCUT_LABELS } from "../../shared/shortcuts.ts";
 import { registerBrowserFeature, requestBrowser } from "../../shared/browser.ts";
 import { ComposerDraft, joinAtCursor } from "./composer.ts";
 import { loadVoiceDictionary, removeVoiceReplacement, setVoiceReplacement, VOICE_DICTIONARY_PATH } from "./dictionary.ts";
@@ -54,17 +56,24 @@ export default function dictation(pi: ExtensionAPI): void {
 		}
 	});
 
-	for (const key of ["alt+m", "ctrl+space"] as const) pi.registerShortcut(key, {
+	pi.registerShortcut(VOICE_SHORTCUTS.dictation, {
 		description: "Start/stop editable microphone dictation",
 		handler: async (ctx) => { if (ctx.mode === "rpc") requestBrowser(ctx, "dictation", "toggle"); else voice.toggle(ctx, insert); },
 	});
 	pi.registerCommand("voice", {
 		description: "Editable dictation; never submits the transcript",
 		getArgumentCompletions: (prefix) => {
-			const values = ["start", "stop", "cancel", "status", "corrections", "help"].filter((value) => value.startsWith(prefix));
+			const values = ["start", "stop", "cancel", "status", "backend", "corrections", "help"].filter((value) => value.startsWith(prefix));
 			return values.length ? values.map((value) => ({ value, label: value })) : null;
 		},
 		handler: async (args, ctx) => {
+			const backend = args.trim().match(/^backend(?:\s+(codex|local))?$/iu);
+			if (backend) {
+				if (!backend[1]) { ctx.ui.notify(`Dictation backend: ${(await dictationSettings()).backend}`, "info"); return; }
+				if (voice.isBusy || browser?.isActive()) { ctx.ui.notify("Stop dictation before changing its backend.", "warning"); return; }
+				if (ctx.mode === "rpc") { requestBrowser(ctx, "dictation", "backend", backend[1].toLowerCase()); return; }
+				await setDictationBackend(backend[1].toLowerCase()); ctx.ui.notify("Dictation backend updated. Local Whisper downloads its public model on first recording; English by default (PI_DICTATION_LANGUAGE changes language).", "info"); return;
+			}
 			const corrections = args.trim().match(/^corrections(?:\s+(.*))?$/iu);
 			if (corrections) { await dictionaryCommand(corrections[1] ?? "", ctx); return; }
 			if (ctx.mode === "rpc" && ["", "toggle", "start", "stop", "cancel"].includes(args.trim().toLowerCase())) {
@@ -76,7 +85,7 @@ export default function dictation(pi: ExtensionAPI): void {
 				case "stop": if (voice.isRecording) await voice.stop(); else if (voice.snapshot.status === "starting") await voice.cancel(); break;
 				case "cancel": await voice.cancel(); break;
 				case "status": ctx.ui.notify(`Dictation: ${voice.snapshot.status} · ${recorderDescription()}`, "info"); break;
-				default: ctx.ui.notify("/voice [start|stop|cancel|status|corrections|help] · Alt+M toggles · Ctrl+X stops · Esc cancels.", "info");
+				default: ctx.ui.notify(`/voice [start|stop|cancel|status|backend codex|local|corrections|help] · ${VOICE_SHORTCUT_LABELS.dictation} toggles · Esc cancels.`, "info");
 			}
 		},
 	});
@@ -119,9 +128,8 @@ export class DictationEditor extends CustomEditor {
 	override handleInput(data: string): void {
 		if (isKeyRelease(data)) { if (matchesKey(data, "space")) this.voice.releasePushToTalk(); return; }
 		const insert = (text: string) => this.finishTranscript(text);
-		if (matchesKey(data, "alt+m") || matchesKey(data, "ctrl+space")) { this.voice.toggle(this.context, insert); return; }
+		if (matchesKey(data, VOICE_SHORTCUTS.dictation)) { if (!isKeyRepeat(data)) this.voice.toggle(this.context, insert); return; }
 		if (this.voice.isBusy && matchesKey(data, "escape")) { void this.voice.cancel(); return; }
-		if (this.voice.isRecording && matchesKey(data, "ctrl+x")) { void this.voice.stop(); return; }
 		if (this.voice.isBusy && (this.bindings.matches(data, "tui.input.submit") || this.bindings.matches(data, "app.message.followUp"))) {
 			this.context.ui.notify("Stop dictation before sending, or press Escape to cancel.", "info"); return;
 		}
@@ -150,6 +158,6 @@ async function dictionaryCommand(args: string, ctx: ExtensionContext): Promise<v
 }
 
 function updateStatus(ctx: ExtensionContext, snapshot: VoiceSnapshot): void {
-	const text = snapshot.status === "idle" ? undefined : snapshot.status === "recording" ? "● listening · Alt+M/Ctrl+X stop · Esc cancel" : snapshot.message;
+	const text = snapshot.status === "idle" ? undefined : snapshot.status === "recording" ? `● listening · ${VOICE_SHORTCUT_LABELS.dictation} stop · Esc cancel` : snapshot.message;
 	ctx.ui.setStatus(STATUS, text ? ctx.ui.theme.fg(snapshot.status === "error" ? "error" : "accent", text) : undefined);
 }
