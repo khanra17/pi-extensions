@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { resolveVoiceAuth, resolveCodexVoiceAuth, transcribeWithCodex } from "../shared/codex.ts";
+import { resolveVoiceAuth as resolveExplicitVoiceAuth, resolveCodexVoiceAuth, transcribeWithCodex } from "../shared/codex.ts";
 import { CodexLiveTransport, buildLiveSignalingUrl, buildLiveSidebandUrl, buildLiveHeaders, parseLiveCallId } from "../packages/live/transport.ts";
+const resolveVoiceAuth = (ctx: ExtensionContext) => resolveExplicitVoiceAuth(ctx, "openai");
 const token = "fixture." + Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "fixture-account" } })).toString("base64url") + ".fixture";
 const context = (baseUrl: string, apiKey: string, oauth = false) => ({ model: { provider: "openai", api: "openai-responses", baseUrl }, modelRegistry: {
-  getApiKeyAndHeaders: async () => ({ ok: true, apiKey, baseUrl, headers: { "X-Cockpit-Scope": "fixture-bound-account" } }),
+  getProvider: (id: string) => { assert.equal(id, "openai"); return { id, baseUrl, getModels: () => [{ id: "chat-model", provider: id, api: "openai-responses", baseUrl }] }; },
+  getApiKeyAndHeaders: async (model: { id: string; provider: string }) => { assert.equal(model.id, "pi-voice"); assert.equal(model.provider, "openai"); return { ok: true, apiKey, baseUrl, headers: { "X-Cockpit-Scope": "fixture-bound-account" } }; },
   isUsingOAuth: () => oauth,
   getProviderAuth: (provider: string) => { assert.equal(provider, "openai", "Must not switch providers/accounts"); return { source: oauth ? "OAuth" : "API key", auth: { apiKey } }; },
 } }) as unknown as ExtensionContext;
@@ -66,14 +68,15 @@ test("Cockpit Live bootstrap and frameless sideband both stay on the configured 
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const port = (server.address() as { port: number }).port;
-  const auth = await resolveVoiceAuth(context(`http://127.0.0.1:${port}/v1`, "fixture-cockpit-key"));
-  const transport = new CodexLiveTransport({ sessionId: "fixture", instructions: "Fixture instructions", voice: "sol", getAuth: async () => auth, browserOffer: "v=0\r\nfixture", onBrowserAnswer: value => answer = value, waitForBrowserPeer: async () => {}, callbacks: { onEvent: () => {}, onOutputLevel: () => {} } });
+  let transport: CodexLiveTransport | undefined;
   try {
+  const auth = await resolveVoiceAuth(context(`http://127.0.0.1:${port}/v1`, "fixture-cockpit-key"));
+  transport = new CodexLiveTransport({ sessionId: "fixture", instructions: "Fixture instructions", voice: "sol", getAuth: async () => auth, browserOffer: "v=0\r\nfixture", onBrowserAnswer: value => answer = value, waitForBrowserPeer: async () => {}, callbacks: { onEvent: () => {}, onOutputLevel: () => {} } });
     await transport.connect(); assert.equal(answer, "v=0\r\nfixture-answer"); assert.equal(transport.connected, true);
     await transport.send({ type: "session.close" }); for (let i = 0; i < 50 && !received; i++) await new Promise(resolve => setTimeout(resolve, 5));
     assert.equal(JSON.parse(received).type, "session.close");
   } finally {
-    await transport.close(); for (const client of wss.clients) client.terminate();
+    await transport?.close(); for (const client of wss.clients) client.terminate();
     await new Promise<void>(resolve => wss.close(() => resolve()));
     await new Promise<void>(resolve => server.close(() => resolve()));
   }

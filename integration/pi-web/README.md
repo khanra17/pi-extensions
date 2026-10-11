@@ -34,7 +34,11 @@ Voice shortcuts use Ctrl+Alt+M/L/V in CLI and web, leaving Ctrl+Space (IME), Ctr
 
 Failures remain visible in a separate accessible alert, even with controls closed. Preview failures show their actual cause, not a generic delay. No local backend or model download is included.
 
-Dictation and Live use Pi's Codex login or the selected OpenAI-compatible model's configured endpoint/key. For Cockpit Tools, keep its `/v1` base URL and scoped key in Pi's existing provider configuration. Transcription, Live bootstrap and sideband all stay on that gateway; failed requests never fall back to another account.
+Dictation and Live each have their own **Provider** selector in their own panel, independent of chat and each other. Both default to Codex OAuth. Right-click Mic/Live, or run `/voice provider` / `/live provider` (also on mobile), to open their controls without capturing/calling. Changes are blocked while that feature is running and do not change chat or read-aloud.
+
+For Cockpit Tools: **Settings → Models → select the `openai` provider row (not a model) → Base URL `http://localhost:18080/v1` → Save**. Keep the existing key/catalog models. `localhost` refers to the Pi server, not the phone. Then run `/voice provider openai`; choose `/live provider openai` only if Live should also use Cockpit, otherwise leave `/live provider openai-codex`. Voice uses provider-level auth/headers/base URL, not chat model overrides. Transcription, Live bootstrap and sideband stay on that gateway; failures never switch accounts.
+
+Current actual Cockpit probes reached this local service using the existing resolved key, without changing saved configuration: transcription returned an upstream Cloudflare challenge; Live signaling returned HTTP 404. Contract tests passing do not establish successful voice service operation. Neither failure triggers a local backend or paid Speech fallback.
 
 Read-aloud starts with the first sentence and buffers the next five. Long replies are referenced by session entry ID, not uploaded as giant control requests or rejected at 12,000 characters. Pause preserves bounded buffering; Stop cancels it.
 

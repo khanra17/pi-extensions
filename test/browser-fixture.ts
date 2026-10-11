@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerBrowserFeature, requestBrowser, type BrowserAdapter } from "../shared/browser.ts";
+import { voiceProviderInfo, configureVoiceProvider } from "../shared/voice-provider.ts";
 import { BrowserDictation } from "../packages/dictation/browser.ts";
 import { DEFAULT_SETTINGS } from "../packages/read-aloud/reader-settings.ts";
 import { BrowserReadAloud } from "../packages/read-aloud/browser.ts";
@@ -26,6 +27,6 @@ export default function fixture(pi: ExtensionAPI) {
       }, isActive: () => reader.isActive(), disconnect: client => reader.disconnect(client), dispose: () => reader.dispose(),
     };
     registerBrowserFeature(ctx, "tts", tts);
-    registerBrowserFeature(ctx, "live", { handle: async call => { if (call.action === "start") throw new Error("Offline fixture does not call the Live service."); return {}; }, disconnect: async () => {}, dispose: async () => {} });
+    registerBrowserFeature(ctx, "live", { handle: async call => { if (call.action === "settings") return voiceProviderInfo(ctx, "live"); if (call.action === "configure") return configureVoiceProvider(ctx, "live", call.body.provider); if (call.action === "start") throw new Error("Offline fixture does not call the Live service."); return {}; }, disconnect: async () => {}, dispose: async () => {} });
   });
 }

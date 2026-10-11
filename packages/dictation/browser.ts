@@ -4,6 +4,7 @@ import { claimMicrophone } from "../../shared/microphone.ts";
 import { resolveDictationAuth, transcribeDictation } from "./backend.ts";
 import { applyVoiceDictionary, loadVoiceDictionary } from "./dictionary.ts";
 import { prepareWavForTranscription } from "./audio.ts";
+import { voiceProviderInfo, configureVoiceProvider } from "../../shared/voice-provider.ts";
 
 interface Run {
   id: string; client: string; abort: AbortController; release(): void;
@@ -18,6 +19,8 @@ export class BrowserDictation implements BrowserAdapter {
     auth: resolveDictationAuth, transcribe: transcribeDictation, dictionary: loadVoiceDictionary,
   }) {}
   async handle(call: BrowserCall): Promise<unknown> {
+    if (call.action === "settings") return voiceProviderInfo(this.ctx, "dictation");
+    if (call.action === "configure") { if (this.run) throw new Error("Stop dictation before changing its provider."); return configureVoiceProvider(this.ctx, "dictation", call.body.provider); }
     if (call.action === "start") {
       if (this.run) throw new Error("A microphone run is already active. Stop it first.");
       const run: Run = { id: call.run ?? crypto.randomUUID(), client: call.client, abort: new AbortController(), release: claimMicrophone(this.ctx.sessionManager.getSessionId(), "dictation"), pending: new Set() };

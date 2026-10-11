@@ -44,11 +44,21 @@ try {
     await page.goto(`${base}/?session=${session.getSessionId()}`);
     await page.getByRole("button", { name: "Start dictation", exact: true }).waitFor({ timeout: 30_000 });
     const input = page.locator("textarea").first();
+    await page.getByRole("button", { name: "Start dictation", exact: true }).click({ button: "right" });
+    await page.getByRole("region", { name: "Dictation controls", exact: true }).waitFor();
+    const dictationProvider = page.getByRole("combobox", { name: "Dictation provider", exact: true });
+    await dictationProvider.selectOption("openai");
+    await page.waitForFunction(() => document.querySelector('[aria-label="Dictation provider"]')?.value === "openai");
+    assert.equal(await page.getByRole("button", { name: "Stop dictation", exact: true }).count(), 0, "Opening provider settings must not capture audio");
+    const providerSettings = feature => page.request.post(`${base}/api/pi-voice/v1/${session.getSessionId()}?feature=${feature}&action=settings`, { data: {}, headers: { "x-pi-voice-client": "provider-inspector" } }).then(response => response.json());
+    assert.equal((await providerSettings("live")).provider, "openai-codex", "Dictation provider changes never change Live");
+    await page.getByRole("button", { name: "Close voice controls", exact: true }).click();
     await input.fill("Existing draft."); await page.getByRole("button", { name: "Start dictation", exact: true }).click();
     try { await page.waitForFunction(() => /spoken (preview|final)/.test(document.querySelector("textarea")?.value ?? ""), null, { timeout: 15_000 }); }
     catch (error) { await page.screenshot({ path: join(agent, `${name}-capture-error.png`), fullPage: true }); console.log(await page.locator(".pi-voice-controls").innerText(), await page.locator(".pi-voice-indicator").getAttribute("title"), await page.evaluate(() => ({ secure: isSecureContext, media: typeof navigator.mediaDevices, get: typeof navigator.mediaDevices?.getUserMedia })), errors); throw error; }
     await page.getByRole("button", { name: "Stop dictation", exact: true }).click();
     await page.waitForFunction(() => document.querySelector("textarea")?.value === "Existing draft. spoken final", { timeout: 15_000 });
+    assert.equal(await dictationProvider.inputValue(), "openai");
     assert.equal(prompts.length, 0, "Dictation must never send a prompt");
     await input.fill("Keep my edit."); await page.getByRole("button", { name: "Start dictation", exact: true }).click();
     await page.waitForFunction(() => /spoken (preview|final)/.test(document.querySelector("textarea")?.value ?? ""));
@@ -81,6 +91,8 @@ try {
     await page.getByRole("region", { name: "Read-aloud controls", exact: true }).waitFor();
     assert.equal(await page.getByRole("button", { name: "Cancel dictation", exact: true }).count(), 0);
     assert.equal(await page.getByRole("button", { name: "End Live", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("combobox", { name: "Dictation provider", exact: true }).count(), 0, "Read-aloud never contains Dictation settings");
+    assert.equal(await page.getByRole("combobox", { name: "Live provider", exact: true }).count(), 0, "Read-aloud never contains Live settings");
     assert.equal(await page.getByRole("button", { name: "Read aloud", exact: true }).getAttribute("aria-expanded"), "true");
     await page.waitForTimeout(250);
     assert.equal(speechRequests.length, 0, "Opening playback/settings must not start speech");
@@ -109,6 +121,12 @@ try {
     await page.getByRole("button", { name: "Stop Live voice", exact: true }).click();
     assert.ok(await page.evaluate(() => window.__voiceTracks.every(track => track.readyState === "ended")), "Viewing-device microphone tracks must all stop");
     await page.evaluate(() => window.__fixturePeer?.close());
+    const liveProvider = page.getByRole("combobox", { name: "Live provider", exact: true });
+    await liveProvider.selectOption("openai");
+    await page.waitForFunction(() => document.querySelector('[aria-label="Live provider"]')?.value === "openai");
+    assert.equal((await providerSettings("dictation")).provider, "openai", "Live changes never reset Dictation");
+    await liveProvider.selectOption("openai-codex");
+    await page.waitForFunction(() => document.querySelector('[aria-label="Live provider"]')?.value === "openai-codex");
     await page.unroute("**/api/pi-voice/v1/*?feature=live&action=start");
     await page.route("**/api/pi-voice/v1/*?feature=live&action=start", route => route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "Fixture Live signaling failed (403)." }) }));
     await page.getByRole("button", { name: "Start Live voice", exact: true }).click();

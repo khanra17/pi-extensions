@@ -2,6 +2,7 @@ import { CustomEditor, type ExtensionAPI, type ExtensionContext, type Keybinding
 import { isKeyRelease, isKeyRepeat, matchesKey, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 import { VoiceController } from "./controller.ts";
 import { BrowserDictation } from "./browser.ts";
+import { voiceProviderInfo, configureVoiceProvider } from "../../shared/voice-provider.ts";
 import { VOICE_SHORTCUTS, VOICE_SHORTCUT_LABELS } from "../../shared/shortcuts.ts";
 import { registerBrowserFeature, requestBrowser } from "../../shared/browser.ts";
 import { ComposerDraft, joinAtCursor } from "./composer.ts";
@@ -62,10 +63,17 @@ export default function dictation(pi: ExtensionAPI): void {
 	pi.registerCommand("voice", {
 		description: "Editable dictation; never submits the transcript",
 		getArgumentCompletions: (prefix) => {
-			const values = ["start", "stop", "cancel", "status", "corrections", "help"].filter((value) => value.startsWith(prefix));
+			const values = ["start", "stop", "cancel", "status", "provider", "provider openai", "provider openai-codex", "corrections", "help"].filter((value) => value.startsWith(prefix));
 			return values.length ? values.map((value) => ({ value, label: value })) : null;
 		},
 		handler: async (args, ctx) => {
+			const provider = args.trim().match(/^provider(?:\s+(\S+))?$/iu);
+			if (provider) {
+				if (provider[1] && (voice.isBusy || browser?.isActive())) { ctx.ui.notify("Stop dictation before changing its provider.", "warning"); return; }
+				const info = provider[1] ? await configureVoiceProvider(ctx, "dictation", provider[1]) : await voiceProviderInfo(ctx, "dictation");
+				if (!provider[1] && ctx.mode === "rpc") requestBrowser(ctx, "dictation", "settings");
+				ctx.ui.notify(`Dictation provider: ${info.provider}${info.endpoint ? ` · ${info.endpoint}` : ""}. Chat and Live are unchanged.`, "info"); return;
+			}
 			const corrections = args.trim().match(/^corrections(?:\s+(.*))?$/iu);
 			if (corrections) { await dictionaryCommand(corrections[1] ?? "", ctx); return; }
 			if (ctx.mode === "rpc" && ["", "toggle", "start", "stop", "cancel"].includes(args.trim().toLowerCase())) {
@@ -77,7 +85,7 @@ export default function dictation(pi: ExtensionAPI): void {
 				case "stop": if (voice.isRecording) await voice.stop(); else if (voice.snapshot.status === "starting") await voice.cancel(); break;
 				case "cancel": await voice.cancel(); break;
 				case "status": ctx.ui.notify(`Dictation: ${voice.snapshot.status} · ${recorderDescription()}`, "info"); break;
-				default: ctx.ui.notify(`/voice [start|stop|cancel|status|corrections|help] · ${VOICE_SHORTCUT_LABELS.dictation} toggles · Esc cancels.`, "info");
+				default: ctx.ui.notify(`/voice [start|stop|cancel|status|provider [ID]|corrections|help] · ${VOICE_SHORTCUT_LABELS.dictation} toggles · Esc cancels.`, "info");
 			}
 		},
 	});

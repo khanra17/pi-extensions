@@ -22,7 +22,9 @@ Run `/reload` after installation. To update, repeat its install command; to remo
 
 Use them in the terminal or with the [in-page Pi Web integration](integration/pi-web). In Pi Web, media uses the viewing device; stock Pi Web needs the integration build.
 
-Dictation and Live use Pi's Codex login or the selected OpenAI-compatible model's configured endpoint and credentials (including Cockpit Tools). They never fall back to a different account. Read-aloud stays on Edge. The Codex voice protocol and Edge Read Aloud are unofficial.
+Dictation and Live each select their own provider, independently of chat and of each other. Both default to Pi's Codex login. `/voice provider openai` uses the configured OpenAI-compatible endpoint/key for dictation; `/live provider openai` does the same for Live. `/voice provider openai-codex` and `/live provider openai-codex` restore Codex OAuth for that feature. They never fall back to a different account. Read-aloud stays independently on Edge.
+
+For Cockpit Tools, set provider `openai`'s **Base URL** to `http://localhost:18080/v1` in Pi Web **Settings → Models → provider row → Save**, retaining your saved key/catalog models. `localhost` is the machine running Pi/Pi Web. The provider-level endpoint and authentication apply to voice; chat model overrides and chat model switching do not. The Codex voice protocol and Edge Read Aloud are unofficial.
 
 ## Development
 
