@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getVoiceProvider, configureVoiceProvider, voiceProviderInfo } from "../../shared/voice-provider.ts";
 import { resolveVoiceAuth } from "../../shared/codex.ts";
 import { registerBrowserFeature, requestBrowser } from "../../shared/browser.ts";
 import { BrowserLive } from "./browser.ts";
@@ -25,7 +26,7 @@ export default function liveVoice(pi: ExtensionAPI): void {
 	registerLiveVoice(pi, {
 		getAuth: async (ctx, signal) => {
 			if (signal?.aborted) throw signal.reason;
-			const auth = await resolveVoiceAuth(ctx);
+			const auth = await resolveVoiceAuth(ctx, await getVoiceProvider("live"));
 			if (signal?.aborted) throw signal.reason;
 			return auth;
 		},
@@ -33,7 +34,7 @@ export default function liveVoice(pi: ExtensionAPI): void {
 		isEnabled: () => enabled,
 		prepare,
 		getArgumentCompletions: (prefix) => {
-			const values = ["start", "stop", "status", "voice", "enabled on", "enabled off", "help"].filter((value) => value.startsWith(prefix));
+			const values = ["start", "stop", "status", "provider", "provider openai", "provider openai-codex", "voice", "enabled on", "enabled off", "help"].filter((value) => value.startsWith(prefix));
 			return values.length ? values.map((value) => ({ value, label: value })) : null;
 		},
 		handleCommand: async (args, ctx, live) => {
@@ -47,6 +48,13 @@ export default function liveVoice(pi: ExtensionAPI): void {
 				case "start": if (!live.isActive()) await live.toggle(ctx); break;
 				case "stop": case "cancel": await live.stop(); break;
 				case "status": ctx.ui.notify(`Live voice: ${browser?.isActive() || live.isActive() ? "active" : "idle"} · ${enabled ? "enabled" : "disabled"} · ${voice}`, "info"); break;
+				case "provider": {
+					const value = args.trim().slice("provider".length).trim();
+					if (value && (live.isActive() || browser?.isActive())) { ctx.ui.notify("Stop Live before changing its provider.", "warning"); return; }
+					const info = value ? await configureVoiceProvider(ctx, "live", value) : await voiceProviderInfo(ctx, "live");
+					if (!value && ctx.mode === "rpc") requestBrowser(ctx, "live", "settings");
+					ctx.ui.notify(`Live provider: ${info.provider}${info.endpoint ? ` · ${info.endpoint}` : ""}. Chat and Dictation are unchanged.`, "info"); break;
+				}
 				case "voice": {
 					let value = parts.join(" ");
 					if (!value && ctx.hasUI) {
@@ -66,7 +74,7 @@ export default function liveVoice(pi: ExtensionAPI): void {
 					ctx.ui.notify(`Live voice ${enabled ? "enabled" : "disabled"}.`, "info");
 					break;
 				}
-				default: ctx.ui.notify("/live [start|stop|status|voice [name]|enabled on|off|help] · Ctrl+Alt+L toggles · Space mutes · Esc ends. Conversational voice may delegate work to Pi; it is not dictation or literal TTS.", "info");
+				default: ctx.ui.notify("/live [start|stop|status|provider [ID]|voice [name]|enabled on|off|help] · Ctrl+Alt+L toggles · Space mutes · Esc ends. Conversational voice may delegate work to Pi; it is not dictation or literal TTS.", "info");
 			}
 		},
 	});

@@ -33,10 +33,15 @@ export interface CodexVoiceAuth {
 	headers?: Record<string, string | null>;
 }
 
-/** Resolve the selected OpenAI endpoint at run start; never fall back to a different account. */
-export async function resolveVoiceAuth(ctx: ExtensionContext): Promise<CodexVoiceAuth> {
-	const model = ctx.model;
-	if (!model || !(model.provider === "openai" || model.provider === PROVIDER_ID || model.api === "openai-completions" || model.api === "openai-responses" || model.api === "openai-codex-responses")) return resolveCodexVoiceAuth(ctx);
+/** Resolve an explicit voice provider, never the current chat model or a fallback account. */
+export async function resolveVoiceAuth(ctx: ExtensionContext, providerId = PROVIDER_ID): Promise<CodexVoiceAuth> {
+	if (providerId === PROVIDER_ID) return resolveCodexVoiceAuth(ctx);
+	const provider = ctx.modelRegistry.getProvider(providerId);
+	if (!provider) throw new Error(`Voice provider ${providerId} is not configured in Pi.`);
+	const candidate = provider.getModels().find(model => ["openai-completions", "openai-responses", "openai-codex-responses"].includes(model.api));
+	if (!candidate) throw new Error(`Voice provider ${providerId} needs an OpenAI-compatible API configuration.`);
+	// Provider-level auth/headers/URL apply to voice. Chat model overrides do not.
+	const model = { ...candidate, id: "pi-voice", name: "Voice", headers: undefined, baseUrl: provider.baseUrl ?? candidate.baseUrl };
 	const resolved = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 	if (!resolved.ok) throw new Error(resolved.error);
 	const baseUrl = normalizeBaseUrl(resolved.baseUrl ?? model.baseUrl);
@@ -75,6 +80,7 @@ export async function resolveCodexVoiceAuth(ctx: ExtensionContext): Promise<Code
 		accessToken: resolved.auth.apiKey,
 		accountId,
 		baseUrl: normalizeBaseUrl(resolved.auth.baseUrl ?? provider.baseUrl ?? DEFAULT_BASE_URL),
+		headers: resolved.auth.headers,
 	};
 }
 
