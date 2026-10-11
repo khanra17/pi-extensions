@@ -28,6 +28,30 @@ export interface CodexVoiceAuth {
 	accessToken: string;
 	accountId: string;
 	baseUrl: string;
+	/** OpenAI-compatible Cockpit route; omitted for the native Codex protocol. */
+	route?: "openai";
+	headers?: Record<string, string | null>;
+}
+
+/** Resolve the selected OpenAI endpoint at run start; never fall back to a different account. */
+export async function resolveVoiceAuth(ctx: ExtensionContext): Promise<CodexVoiceAuth> {
+	const model = ctx.model;
+	if (!model || !(model.provider === "openai" || model.provider === PROVIDER_ID || model.api === "openai-completions" || model.api === "openai-responses" || model.api === "openai-codex-responses")) return resolveCodexVoiceAuth(ctx);
+	const resolved = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+	if (!resolved.ok) throw new Error(resolved.error);
+	const baseUrl = normalizeBaseUrl(resolved.baseUrl ?? model.baseUrl);
+	const url = new URL(baseUrl);
+	const native = (url.hostname === "chatgpt.com" || url.hostname === "chat.openai.com") && url.pathname.includes("/backend-api");
+	if (native) {
+		// Availability snapshots can be stale during startup; use request-time auth.
+		if ((await ctx.modelRegistry.getProviderAuth(model.provider))?.source !== "OAuth") throw new Error("Direct Codex voice requires Pi's Codex login, not an API key.");
+		const accountId = extractAccountId(resolved.apiKey ?? "");
+		if (!resolved.apiKey || !accountId) throw new Error("The selected Codex OAuth credential has no ChatGPT account ID.");
+		return { accessToken: resolved.apiKey, accountId, baseUrl, headers: resolved.headers };
+	}
+	if (url.hostname === "api.openai.com") throw new Error("Choose Cockpit Tools' voice-enabled endpoint or Pi's Codex login. The official paid Speech API is not a fallback.");
+	if (!resolved.apiKey && !Object.values(resolved.headers ?? {}).some(Boolean)) throw new Error("The selected OpenAI-compatible endpoint has no configured authentication.");
+	return { accessToken: resolved.apiKey ?? "", accountId: "", baseUrl, headers: resolved.headers, route: "openai" };
 }
 
 /** Resolve Pi's canonical Codex credential and reject every non-OAuth source. */
@@ -65,7 +89,7 @@ export async function transcribeWithCodex(
 	const linkedSignal = AbortSignal.any([signal, timeout.signal]);
 
 	try {
-		await primeCodexAffinityCookies(auth, linkedSignal, false);
+		if (auth.route !== "openai") await primeCodexAffinityCookies(auth, linkedSignal, false);
 		let challengeRetried = false;
 
 		for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -79,8 +103,8 @@ export async function transcribeWithCodex(
 				continue;
 			}
 
-			captureCookies(auth, response.headers);
-			if (isCloudflareChallenge(response) && !challengeRetried) {
+			if (auth.route !== "openai") captureCookies(auth, response.headers);
+			if (auth.route !== "openai" && isCloudflareChallenge(response) && !challengeRetried) {
 				challengeRetried = true;
 				await response.arrayBuffer();
 				await primeCodexAffinityCookies(auth, linkedSignal, true);
@@ -108,10 +132,15 @@ export async function transcribeWithCodex(
 async function postAudio(audio: Uint8Array, auth: CodexVoiceAuth, signal: AbortSignal): Promise<Response> {
 	const form = new FormData();
 	form.append("file", new Blob([new Uint8Array(audio)], { type: "audio/wav" }), "audio.wav");
+	if (auth.route === "openai") {
+		form.append("model", "whisper-1");
+		form.append("response_format", "json");
+	}
 	const headers = codexRequestHeaders(auth);
-	const cookie = codexAffinityCookieHeader(auth);
-	if (cookie) headers.Cookie = cookie;
-	return fetch(`${auth.baseUrl}/transcribe`, { method: "POST", headers, body: form, signal });
+	const cookie = auth.route !== "openai" ? codexAffinityCookieHeader(auth) : undefined;
+	if (cookie) headers.cookie = cookie;
+	delete headers["content-type"]; // FormData owns the multipart boundary.
+	return fetch(`${auth.baseUrl}/${auth.route === "openai" ? "audio/transcriptions" : "transcribe"}`, { method: "POST", redirect: "error", headers, body: form, signal });
 }
 
 async function parseTranscriptionResponse(response: Response): Promise<string> {
@@ -121,14 +150,14 @@ async function parseTranscriptionResponse(response: Response): Promise<string> {
 			const ray = response.headers.get("cf-ray");
 			throw new CodexTranscriptionBlocked(
 				`OpenAI's transcription route was blocked by a Cloudflare challenge${ray ? ` (${ray})` : ""}. ` +
-					"This endpoint challenge does not ask you to sign in again. Choose Local Whisper in voice controls, or /voice backend local, to transcribe without this endpoint (first use downloads a model).",
+					"This response does not establish whether your credentials are valid or which rule blocked the request. Your draft has not been sent as a message.",
 			);
 		}
 		if (response.status === 401) {
-			throw new Error("The Codex transcription route rejected the OAuth token. Run /login and sign in again.");
+			throw new Error("The transcription endpoint rejected the configured credential (401). Check this provider's authentication.");
 		}
 		if (response.status === 403) {
-			throw new Error(`Codex transcription is unavailable for this account (403)${detail ? `: ${detail}` : ""}`);
+			throw new Error(`The transcription endpoint rejected the request (403)${detail ? `: ${detail}` : ""}`);
 		}
 		if (response.status === 413) throw new Error("The voice recording was too large for Codex to transcribe.");
 		if (response.status === 429) throw new Error("Codex transcription is temporarily rate limited. Try again shortly.");
@@ -169,15 +198,18 @@ export async function primeCodexAffinityCookies(auth: CodexVoiceAuth, signal: Ab
 }
 
 export function codexRequestHeaders(auth: CodexVoiceAuth): Record<string, string> {
-	return {
-		Authorization: `Bearer ${auth.accessToken}`,
-		Accept: "application/json",
-		"ChatGPT-Account-Id": auth.accountId,
-		originator: "pi",
-		// Cloudflare affinity is tied to the first-party Pi/Codex-shaped UA. Keep
-		// this identical to pi-ai's openai-codex request header.
-		"User-Agent": `pi (${platform()} ${release()}; ${arch()})`,
-	};
+	const headers = new Headers({ Accept: "application/json" });
+	if (auth.accessToken) headers.set("Authorization", `Bearer ${auth.accessToken}`);
+	if (auth.route !== "openai") {
+		headers.set("ChatGPT-Account-Id", auth.accountId);
+		headers.set("originator", "pi");
+		headers.set("User-Agent", `pi (${platform()} ${release()}; ${arch()})`);
+	}
+	for (const [name, value] of Object.entries(auth.headers ?? {})) {
+		if (value === null) headers.delete(name); else headers.set(name, value);
+	}
+	const result: Record<string, string> = {}; headers.forEach((value, name) => { result[name] = value; });
+	return result;
 }
 
 function captureCookies(auth: CodexVoiceAuth, headers: Headers): void {
@@ -255,7 +287,7 @@ function retryDelay(headers: Headers, attempt: number): number {
 function normalizeBaseUrl(value: string): string {
 	const url = new URL(value.trim());
 	if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("Invalid OpenAI Codex base URL.");
-	url.pathname = url.pathname.replace(/\/+$/u, "");
+	url.pathname = url.pathname.replace(/\/+$/u, "").replace(/\/backend-api\/codex$/u, "/backend-api");
 	url.search = "";
 	url.hash = "";
 	if ((url.hostname === "chatgpt.com" || url.hostname === "chat.openai.com") && !url.pathname.includes("/backend-api")) {
