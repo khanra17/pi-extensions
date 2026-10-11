@@ -55,6 +55,28 @@ try {
     await input.fill("My deliberate edit."); await page.getByRole("button", { name: "Stop dictation", exact: true }).click();
     await page.getByRole("button", { name: "Start dictation", exact: true }).waitFor();
     assert.equal(await input.inputValue(), "My deliberate edit.");
+    const blocked = "**/api/pi-voice/v1/*?feature=dictation&action=*";
+    await page.route(blocked, async route => {
+      const action = new URL(route.request().url()).searchParams.get("action");
+      if (["preview", "finish"].includes(action)) await route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "Fixture Cloudflare challenge. Choose Local Whisper.", retryable: false, code: "transcription_blocked" }) });
+      else await route.continue();
+    });
+    await input.fill("Preserve on failure."); await page.keyboard.press("Control+Alt+m");
+    await page.getByRole("alert").filter({ hasText: "Fixture Cloudflare" }).waitFor();
+    await page.getByRole("button", { name: "Close voice controls", exact: true }).click();
+    assert.ok(await page.getByRole("alert").filter({ hasText: "Fixture Cloudflare" }).isVisible(), "Errors remain visible outside a closed panel on mobile and desktop");
+    await page.keyboard.press("Control+Alt+m");
+    await page.getByRole("button", { name: "Start dictation", exact: true }).waitFor();
+    assert.equal(await input.inputValue(), "Preserve on failure."); assert.equal(prompts.length, 0);
+    await page.unroute(blocked);
+    await page.getByRole("button", { name: "Dismiss voice error", exact: true }).click();
+    await page.getByRole("combobox", { name: "Dictation backend", exact: true }).selectOption("local");
+    await page.waitForFunction(() => document.querySelector('[aria-label="Dictation backend"]')?.value === "local");
+    await page.getByRole("combobox", { name: "Dictation backend", exact: true }).selectOption("codex");
+    await page.getByRole("button", { name: "Close voice controls", exact: true }).click();
+    const tracksBefore = await page.evaluate(() => window.__voiceTracks.length);
+    await page.keyboard.press("Control+Shift+l"); await page.keyboard.press("Control+Space");
+    assert.equal(await page.evaluate(() => window.__voiceTracks.length), tracksBefore, "Old browser/IME shortcuts do not activate voice");
     assert.equal(await page.locator(".pi-voice-controls > button").count(), 3, "Full voice toolbar has only microphone, Live and one panel launcher");
     assert.equal(await page.getByRole("button", { name: "Voice controls", exact: true }).count(), 0, "No duplicate settings launcher");
     await page.getByRole("button", { name: "Read aloud", exact: true }).click();
@@ -81,12 +103,17 @@ try {
       const answer = await page.evaluate(async offer => { const peer = new RTCPeerConnection(); window.__fixturePeer = peer; await peer.setRemoteDescription({ type: "offer", sdp: offer }); await peer.setLocalDescription(await peer.createAnswer()); await new Promise(resolve => { if (peer.iceGatheringState === "complete") resolve(); else peer.addEventListener("icegatheringstatechange", () => { if (peer.iceGatheringState === "complete") resolve(); }); }); return peer.localDescription.sdp; }, offer);
       await route.fulfill({ contentType: "application/json", body: JSON.stringify({ run: route.request().headers()["x-pi-voice-run"], answer }) });
     });
-    await page.getByRole("button", { name: "Start Live voice", exact: true }).click();
+    await page.keyboard.press("Control+Alt+l");
     await page.waitForFunction(() => document.querySelector(".pi-voice-indicator")?.textContent === "listening");
     await page.waitForFunction(() => window.__fixturePeer.connectionState === "connected");
     await page.getByRole("button", { name: "Stop Live voice", exact: true }).click();
     assert.ok(await page.evaluate(() => window.__voiceTracks.every(track => track.readyState === "ended")), "Viewing-device microphone tracks must all stop");
     await page.evaluate(() => window.__fixturePeer?.close());
+    await page.unroute("**/api/pi-voice/v1/*?feature=live&action=start");
+    await page.route("**/api/pi-voice/v1/*?feature=live&action=start", route => route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "Fixture Live signaling failed (403)." }) }));
+    await page.getByRole("button", { name: "Start Live voice", exact: true }).click();
+    await page.getByRole("alert").filter({ hasText: "Fixture Live signaling" }).waitFor();
+    assert.ok(await page.evaluate(() => window.__voiceTracks.every(track => track.readyState === "ended")), "Failed Live setup releases microphone tracks");
     let advertised = ["dictation", "live"];
     await page.route("**/api/pi-voice/v1/*", async route => {
       const url = new URL(route.request().url());
@@ -109,7 +136,7 @@ try {
     assert.equal(await page.getByRole("button", { name: "Voice controls", exact: true }).count(), 0, "TTS alone needs only its speaker launcher");
 
     assert.deepEqual(errors, [], "No browser runtime errors");
-    await context.close(); console.log(`Chromium ${name}: three-button toolbar, explicit playback, draft preservation, progressive dictation, no auto-send, user edits, MP3 playback, highlighting, picker, WebRTC and microphone cleanup passed`);
+    await context.close(); console.log(`Chromium ${name}: visible dictation/Live failures, consistent shortcuts, three-button toolbar, explicit playback, draft preservation, progressive dictation, no auto-send, user edits, MP3 playback, highlighting, picker, WebRTC and microphone cleanup passed`);
   }
   const entries = readFileSync(session.getSessionFile(), "utf8").trim().split("\n").map(line => JSON.parse(line));
   assert.equal(entries.filter(entry => entry.type === "message").length, 2, "Dictation must not append any conversation messages");

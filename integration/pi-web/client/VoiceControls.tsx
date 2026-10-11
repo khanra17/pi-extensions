@@ -2,7 +2,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ComposerDraft, joinAtCursor, type ComposerPort } from "@/lib/pi-voice-composer";
 import { assistantText, textContent, messagePhase, isRecord } from "@/lib/pi-voice-messages";
-import { PcmCapture, SpeechPlayer, speechChunks, markWord, clearWord } from "./media";
+import { PcmCapture, SpeechPlayer, speechChunks, markWord, clearWord, waitForLivePeer } from "./media";
+import { voiceShortcut, VOICE_SHORTCUT_LABELS } from "@/lib/pi-voice-shortcuts";
 import "./voice.css";
 
 export interface VoiceHost {
@@ -14,7 +15,7 @@ export interface VoiceHost {
 interface Settings { voice: string; speed: number; volume: number; muted: boolean; autoPlay: boolean; readCode: boolean; highlightEnabled: boolean }
 interface Voice { code: string; locale: string; name: string; friendlyName: string; gender?: string }
 interface Item { id: string; text: string; role: "user" | "assistant"; phase?: string }
-interface Run { kind: "dictation" | "live"; sid: string; id?: string; abort: AbortController; capture?: PcmCapture; stream?: MediaStream; peer?: RTCPeerConnection; audio?: HTMLAudioElement; timer?: ReturnType<typeof setTimeout>; maximum?: ReturnType<typeof setTimeout>; preview?: Promise<void>; draft?: ComposerDraft; recording?: boolean; finalizing?: boolean }
+interface Run { kind: "dictation" | "live"; sid: string; id?: string; abort: AbortController; capture?: PcmCapture; stream?: MediaStream; peer?: RTCPeerConnection; audio?: HTMLAudioElement; timer?: ReturnType<typeof setTimeout>; maximum?: ReturnType<typeof setTimeout>; preview?: Promise<void>; previewBlocked?: boolean; draft?: ComposerDraft; recording?: boolean; finalizing?: boolean }
 const defaultSettings: Settings = { voice: "en-US, AvaNeural", speed: 1, volume: 100, muted: false, autoPlay: false, readCode: false, highlightEnabled: true };
 function visibleItems(host: VoiceHost): Item[] {
   return host.messages.flatMap((message, index) => {
@@ -43,14 +44,15 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
   const autoSeen = useRef(new Set<string>()), autoReady = useRef(false);
   const mounted = useRef(true);
   const [features, setFeatures] = useState<string[] | null>(null);
-  const [phase, setPhase] = useState("idle"), [message, setMessage] = useState("");
+  const [phase, setPhase] = useState("idle"), [message, setMessage] = useState(""), [error, setError] = useState("");
+  const [backend, setBackend] = useState("codex");
   const [panel, setPanel] = useState(false), [playing, setPlaying] = useState(false), [paused, setPaused] = useState(false);
   const [muted, setMuted] = useState(false), [settings, setSettings] = useState(defaultSettings);
   const [voices, setVoices] = useState<Voice[]>([]), [search, setSearch] = useState(""), [language, setLanguage] = useState("");
   const [word, setWord] = useState("");
   const hold = useRef<ReturnType<typeof setTimeout> | undefined>(undefined), held = useRef(false);
   const eventHandler = useRef<(event: { feature: string; type: string; data: Record<string, unknown>; run?: string }) => void>(() => {});
-  const fail = useCallback((error: unknown) => { if (mounted.current) setMessage(error instanceof Error ? error.message : String(error)); }, []);
+  const fail = useCallback((error: unknown) => { if (mounted.current) { setError(error instanceof Error ? error.message : String(error)); setPanel(true); } }, []);
   const raw = useCallback(async (session: string, feature: string, action: string, body: unknown = {}, signal?: AbortSignal, owned?: string, keepalive = false): Promise<Response> => {
     client.current ??= crypto.randomUUID();
     const wav = body instanceof Uint8Array;
@@ -59,7 +61,7 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
       headers: { "Content-Type": wav ? "audio/wav" : "application/json", "x-pi-voice-client": client.current, ...(owned ? { "x-pi-voice-run": owned } : {}) },
       body: wav ? new Blob([new Uint8Array(body)]) : JSON.stringify(body),
     });
-    if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.error || `Voice bridge HTTP ${response.status}`); }
+    if (!response.ok) { const detail = await response.json().catch(() => ({})); throw Object.assign(new Error(detail.error || `Voice bridge HTTP ${response.status}`), { retryable: detail.retryable, code: detail.code }); }
     return response;
   }, []);
   const initialize = useCallback(async (): Promise<string> => {
@@ -78,7 +80,9 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
       sid.current = session; setFeatures(info.features);
       client.current ??= crypto.randomUUID();
       const stream = events.current = new EventSource(`/api/pi-voice/v1/${encodeURIComponent(session)}?events=1&client=${client.current}`);
-      stream.onmessage = event => { try { eventHandler.current(JSON.parse(event.data)); } catch {} };
+      stream.onmessage = event => { try { eventHandler.current(JSON.parse(event.data)); } catch (error) { fail(error); } };
+      stream.onerror = () => { if (run.current) setMessage("Voice status connection interrupted; reconnecting…"); };
+      if (info.features.includes("dictation")) { const value = await (await raw(session, "dictation", "settings")).json(); if (token === generation.current) setBackend(value.backend); }
       if (info.features.includes("tts")) {
         const value = await (await raw(session, "tts", "settings")).json() as Settings;
         if (token === generation.current) { settingsRef.current = value; setSettings(value); }
@@ -87,7 +91,7 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
     })();
     initTask.current = task;
     try { return await task; } finally { if (initTask.current === task) initTask.current = undefined; }
-  }, [raw]);
+  }, [raw, fail]);
   const stopSpeech = useCallback(() => {
     queue.current = []; speechAbort.current?.abort(); speechAbort.current = undefined; player.current?.stop(); clearWord();
     const owned = speechRun.current; speechRun.current = undefined;
@@ -108,9 +112,9 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
     if (current?.kind !== "dictation" || !current.recording || !current.id || !current.capture) { cancelRun(); return; }
     current.finalizing = true; current.recording = false; clearTimeout(current.timer); clearTimeout(current.maximum);
     setPhase("transcribing");
-    const audio = await current.capture.finish();
-    if (run.current !== current) return;
     try {
+      const audio = await current.capture.finish();
+      if (run.current !== current) return;
       await current.preview;
       if (run.current !== current) return;
       const result = await (await raw(current.sid, "dictation", "finish", audio, current.abort.signal, current.id)).json() as { text: string };
@@ -121,7 +125,7 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
   const dictate = useCallback(async () => {
     if (run.current?.kind === "dictation") { await stopDictation(); return; }
     if (run.current) { fail(new Error("Stop Live before starting dictation.")); return; }
-    stopSpeech(); setMessage(""); setPhase("starting"); setBusy(true);
+    stopSpeech(); setError(""); setMessage(""); setPhase("starting"); setBusy(true);
     const capture = new PcmCapture(), abort = new AbortController();
     const current: Run = { kind: "dictation", sid: "", id: crypto.randomUUID(), abort, capture };
     current.maximum = setTimeout(() => { if (run.current !== current) return; if (current.recording) void stopDictation(); else { cancelRun(); fail(new Error("Microphone setup timed out.")); } }, 120_000);
@@ -137,15 +141,15 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
       if (run.current !== current) return;
       current.id = result.run; current.recording = true; setPhase("recording");
       const preview = async () => {
-        if (run.current !== current || !current.recording) return;
+        if (run.current !== current || !current.recording || current.previewBlocked) return;
         const audio = capture.wav();
         if (audio.length >= 48_044) {
           try {
             const result = await (await raw(current.sid, "dictation", "preview", audio, abort.signal, current.id)).json() as { text: string };
             if (run.current === current && current.recording) current.draft?.preview(result.text);
-          } catch { if (run.current === current && current.recording) setMessage("Preview delayed; recording continues."); }
+          } catch (error) { if (run.current === current && current.recording && !abort.signal.aborted) { current.previewBlocked = (error as { retryable?: boolean }).retryable === false; fail(new Error(`Dictation preview failed: ${error instanceof Error ? error.message : String(error)} Recording continues; nothing was sent.`)); } }
         }
-        if (run.current === current && current.recording) current.timer = setTimeout(() => { current.preview = preview(); }, 2_000);
+        if (run.current === current && current.recording && !current.previewBlocked) current.timer = setTimeout(() => { current.preview = preview(); }, 2_000);
       };
       current.timer = setTimeout(() => { current.preview = preview(); }, 2_000);
       abort.signal.addEventListener("abort", () => clearTimeout(current.maximum), { once: true });
@@ -155,8 +159,9 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
     if (run.current?.kind === "live") { cancelRun(); return; }
     if (run.current) { fail(new Error("Stop dictation before starting Live.")); return; }
     if (!isSecureContext || !navigator.mediaDevices?.getUserMedia) { fail(new Error("Live microphone access requires HTTPS (or localhost).")); return; }
-    stopSpeech(); setMessage(""); setPhase("connecting");
+    stopSpeech(); setError(""); setMessage(""); setPhase("connecting"); setPanel(true);
     const current: Run = { kind: "live", sid: "", id: crypto.randomUUID(), abort: new AbortController() }; run.current = current;
+    current.maximum = setTimeout(() => { if (run.current === current) { cancelRun(); fail(new Error("Live setup timed out. Check microphone permission and this device's network.")); } }, 90_000);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
       if (run.current !== current) { stream.getTracks().forEach(track => track.stop()); return; }
@@ -164,9 +169,13 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
       const output = current.audio = new Audio(); output.autoplay = true;
       const peer = current.peer = new RTCPeerConnection();
       stream.getTracks().forEach(track => peer.addTrack(track, stream));
-      peer.ontrack = event => { output.srcObject = event.streams[0] ?? new MediaStream([event.track]); void output.play().catch(() => setMessage("Tap Resume audio to allow Live playback.")); };
-      peer.onconnectionstatechange = () => { if (["failed", "closed"].includes(peer.connectionState) && run.current === current) { cancelRun(); setMessage("Live connection ended."); } };
-      const channel = peer.createDataChannel("oai-events"); channel.onmessage = () => {}; // Server sideband is authoritative.
+      peer.ontrack = event => { output.srcObject = event.streams[0] ?? new MediaStream([event.track]); void output.play().catch(() => { if (run.current === current) { setMessage("Tap Resume audio to allow Live playback."); setPanel(true); } }); };
+      peer.onconnectionstatechange = () => { if (["failed", "closed"].includes(peer.connectionState) && run.current === current) { const detail = `Live WebRTC ended (peer ${peer.connectionState}, ICE ${peer.iceConnectionState}). Check this device's network.`; cancelRun(); fail(new Error(detail)); } };
+      const channel = peer.createDataChannel("oai-events");
+      channel.onmessage = event => {
+        // Sideband owns transcripts/delegation, but service rejection can arrive here before sideband exists.
+        try { const data = JSON.parse(String(event.data)); if (data.type === "error" && run.current === current) { const detail = data.error?.message ?? data.message ?? data.error?.code ?? "Unknown service error"; cancelRun(); fail(new Error(`Codex Live rejected the browser session: ${String(detail).slice(0, 2000)}`)); } } catch { /* Ignore non-JSON data-channel messages. */ }
+      };
       await peer.setLocalDescription(await peer.createOffer());
       await Promise.race([new Promise<void>(resolve => { if (peer.iceGatheringState === "complete") resolve(); else peer.addEventListener("icegatheringstatechange", () => { if (peer.iceGatheringState === "complete") resolve(); }); }), new Promise<void>(resolve => setTimeout(resolve, 2_000))]);
       if (run.current !== current) return;
@@ -174,7 +183,12 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
       if (run.current !== current) return;
       const result = await (await raw(current.sid, "live", "start", { offer: peer.localDescription?.sdp }, current.abort.signal, current.id)).json() as { run: string; answer: string };
       if (run.current !== current) return;
-      current.id = result.run; await peer.setRemoteDescription({ type: "answer", sdp: result.answer }); setPhase("listening");
+      current.id = result.run; await peer.setRemoteDescription({ type: "answer", sdp: result.answer });
+      await waitForLivePeer(peer, current.abort.signal, 20_000, channel);
+      if (run.current !== current) return;
+      const connected = await (await raw(current.sid, "live", "connected", {}, current.abort.signal, current.id)).json() as { phase?: string };
+      if (run.current !== current) return;
+      clearTimeout(current.maximum); setPhase(connected.phase ?? "listening");
     } catch (error) { if (run.current === current) { cancelRun(); fail(error); } }
   }, [stopSpeech, initialize, raw, cancelRun, fail]);
   const pump = useCallback(async () => {
@@ -224,6 +238,7 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
   }, [initialize, raw, fail]);
   eventHandler.current = event => {
     if (event.run && event.run !== (event.feature === "tts" ? speechRun.current : run.current?.id)) return;
+    if (event.feature === "dictation" && event.type === "status") setMessage(String(event.data.message ?? ""));
     if (event.feature === "live" && event.type === "phase") setPhase(String(event.data.phase));
     if (event.feature === "live" && event.type === "transcript" && event.data) setMessage(String(event.data.text ?? ""));
     if (event.type === "closed") {
@@ -233,6 +248,7 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
     }
     if (event.type === "request") {
       const action = String(event.data.action).toLowerCase(), args = String(event.data.args ?? "").trim(); setPanel(true);
+      if (event.feature === "dictation" && action === "backend") { void raw(sid.current!, "dictation", "configure", { backend: args }).then(response => response.json()).then(value => setBackend(value.backend)).catch(fail); return; }
       if (event.feature === "dictation" && action === "stop" && run.current?.kind === "dictation") { void stopDictation(); return; }
       if (["stop", "cancel"].includes(action)) { if (event.feature === "tts") stopSpeech(); else cancelRun(); return; }
       if (event.feature === "tts") {
@@ -273,7 +289,7 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
     if (!host) return;
     if (previous && previous.key !== host.key && !(previous.isNew && !host.isNew && host.sessionId === sid.current)) {
       ++generation.current; cancelRun(); stopSpeech(); events.current?.close(); events.current = undefined; sid.current = undefined; initTask.current = undefined;
-      autoSeen.current.clear(); autoReady.current = false; setFeatures(null); setMessage("");
+      autoSeen.current.clear(); autoReady.current = false; setFeatures(null); setMessage(""); setError("");
     }
     if (host.sessionId) void initialize().catch(fail);
   }, [host?.key, host?.sessionId, initialize, cancelRun, stopSpeech, fail, host]);
@@ -282,9 +298,8 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
     const hide = () => { if (document.hidden) { cancelRun(); stopSpeech(); } };
     const key = (event: KeyboardEvent) => {
       if (event.repeat || event.defaultPrevented || event.isComposing || document.querySelector('[role="dialog"][aria-modal="true"]')) return;
-      if ((event.altKey && event.code === "KeyM") || (event.ctrlKey && event.code === "Space")) { event.preventDefault(); void dictate(); }
-      if (event.ctrlKey && event.shiftKey && event.code === "KeyL") { event.preventDefault(); void live(); }
-      if (event.ctrlKey && event.altKey && event.code === "KeyV") { event.preventDefault(); setPanel(value => !value); }
+      const action = voiceShortcut(event);
+      if (action) { event.preventDefault(); if (action === "dictation") void dictate(); else if (action === "live") void live(); else setPanel(value => !value); }
       if (event.key === "Escape") setPanel(false);
       if (event.key === "Escape" && run.current) { event.preventDefault(); cancelRun(); }
     };
@@ -298,13 +313,16 @@ export function VoiceControls({ host, composer, setBusy }: { host?: VoiceHost; c
   if (!available) return null;
   const icon = (kind: string) => <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{kind === "mic" ? <><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/></> : kind === "live" ? <><path d="M3 10v4M7 6v12M12 2v20M17 6v12M21 10v4"/></> : kind === "speaker" ? <><path d="m11 4-6 5H2v6h3l6 5zM16 8a6 6 0 0 1 0 8M19 5a10 10 0 0 1 0 14"/></> : <><circle cx="12" cy="12" r="3"/><path d="m12 2 2 4 4 1 1 4 3 1-3 2-1 4-4 1-2 3-2-3-4-1-1-4-3-2 3-1 1-4 4-1z"/></>}</svg>;
   return <div className="pi-voice-controls" data-voice-version="1">
-    {enabled("dictation") && <button type="button" className={run.current?.kind === "dictation" ? "active recording" : ""} aria-label={run.current?.kind === "dictation" ? "Stop dictation" : "Start dictation"} title="Dictation · tap to toggle, hold to talk · Alt+M" onPointerDown={() => { held.current = false; hold.current = setTimeout(() => { held.current = true; if (!run.current) void dictate(); }, 300); }} onPointerUp={() => { clearTimeout(hold.current); if (held.current) void stopDictation(); }} onPointerCancel={() => { clearTimeout(hold.current); if (held.current) cancelRun(); }} onKeyDown={event => { if (event.code === "Space" && !event.ctrlKey && !event.altKey) { event.preventDefault(); if (!event.repeat) { held.current = true; if (!run.current) void dictate(); } } }} onKeyUp={event => { if (event.code === "Space" && held.current) { event.preventDefault(); void stopDictation(); } }} onContextMenu={event => event.preventDefault()} onClick={() => { if (!held.current) void dictate(); }} disabled={phase === "transcribing"}>{icon("mic")}</button>}
-    {enabled("live") && <button type="button" className={run.current?.kind === "live" ? "active" : ""} aria-label={run.current?.kind === "live" ? "Stop Live voice" : "Start Live voice"} title="Live conversation · Ctrl+Shift+L" onClick={() => void live()}>{icon("live")}</button>}
+    {enabled("dictation") && <button type="button" className={run.current?.kind === "dictation" ? "active recording" : ""} aria-label={run.current?.kind === "dictation" ? "Stop dictation" : "Start dictation"} title={`Dictation · tap to toggle, hold to talk · ${VOICE_SHORTCUT_LABELS.dictation}`}  onPointerDown={() => { held.current = false; hold.current = setTimeout(() => { held.current = true; if (!run.current) void dictate(); }, 300); }} onPointerUp={() => { clearTimeout(hold.current); if (held.current) void stopDictation(); }} onPointerCancel={() => { clearTimeout(hold.current); if (held.current) cancelRun(); }} onKeyDown={event => { if (event.code === "Space" && !event.ctrlKey && !event.altKey) { event.preventDefault(); if (!event.repeat) { held.current = true; if (!run.current) void dictate(); } } }} onKeyUp={event => { if (event.code === "Space" && held.current) { event.preventDefault(); void stopDictation(); } }} onContextMenu={event => event.preventDefault()} onClick={() => { if (!held.current) void dictate(); }} disabled={phase === "transcribing"}>{icon("mic")}</button>}
+    {enabled("live") && <button type="button" className={run.current?.kind === "live" ? "active" : ""} aria-label={run.current?.kind === "live" ? "Stop Live voice" : "Start Live voice"} title={`Live conversation · ${VOICE_SHORTCUT_LABELS.live}`}  onClick={() => void live()}>{icon("live")}</button>}
     <button type="button" className={playing ? "active" : ""} aria-label={enabled("tts") ? "Read aloud" : "Voice controls"} aria-expanded={panel} title={enabled("tts") ? "Read-aloud controls · Ctrl+Alt+V" : "Voice controls · Ctrl+Alt+V"} onClick={() => { setPanel(value => !value); void initialize().catch(fail); }}>{icon(enabled("tts") ? "speaker" : "settings")}</button>
-    {(busy || message) && <span className="pi-voice-indicator" title={message || phase}>{busy ? phase : ""}</span>}
+    {(busy || message || error) && <span className="pi-voice-indicator" title={error || message || phase}>{error ? "Voice error" : busy ? phase : ""}</span>}
+    {error && !panel && <div className="pi-voice-alert" role="alert"><strong>Voice error</strong><p>{error}</p><button type="button" onClick={() => setPanel(true)}>Open controls</button><button type="button" aria-label="Dismiss voice error" onClick={() => setError("")}>Dismiss</button></div>}
     {panel && <section className="pi-voice-panel" role="region" aria-label="Voice controls panel">
       <header><strong>Voice</strong><button type="button" aria-label="Close voice controls" onClick={() => setPanel(false)}>×</button></header>
-      <p role="status">{message || (phase === "idle" ? "Audio uses this device." : phase)}</p>
+      <p role={error ? "alert" : "status"}>{error || message || (phase === "idle" ? "Audio uses this device." : phase)}</p>
+      {error && <button type="button" aria-label="Dismiss voice error" onClick={() => setError("")}>Dismiss error</button>}
+      {enabled("dictation") && <label>Dictation <select aria-label="Dictation backend" value={backend} disabled={run.current?.kind === "dictation"} onChange={event => { const chosen = event.currentTarget.value; void initialize().then(session => raw(session, "dictation", "configure", { backend: chosen })).then(response => response.json()).then(value => { setBackend(value.backend); setError(""); setMessage(value.backend === "local" ? "Local Whisper: first recording downloads a public model; inference uses server CPU, not server microphone/speakers. English by default (PI_DICTATION_LANGUAGE changes language)." : "Codex OAuth transcription selected."); }).catch(fail); }}><option value="codex">Codex OAuth</option><option value="local">Local Whisper (no API key)</option></select></label>}
       {busy && <div className="pi-voice-actions"><button type="button" onClick={cancelRun}>Cancel / End</button>{run.current?.kind === "live" && <><button type="button" onClick={() => { const current = run.current!; current.stream?.getAudioTracks().forEach(track => { track.enabled = muted; }); setMuted(!muted); if (current.id) void raw(current.sid, "live", "mute", {}, undefined, current.id).catch(fail); }}>{muted ? "Unmute" : "Mute"}</button><button type="button" onClick={() => { void run.current?.audio?.play().catch(fail); }}>Resume audio</button></>}</div>}
       {enabled("tts") && <>
         <div className="pi-voice-actions"><button type="button" onClick={() => speak(-1)}>Previous</button><button type="button" onClick={() => { if (playing) { if (paused) { void player.current?.resume().catch(fail); setPaused(false); } else { player.current?.pause(); setPaused(true); } } else speak(); }}>{playing ? paused ? "Resume" : "Pause" : "Play"}</button><button type="button" onClick={stopSpeech}>Stop</button><button type="button" onClick={() => speak(1)}>Next</button></div>

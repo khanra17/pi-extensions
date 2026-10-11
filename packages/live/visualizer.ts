@@ -1,4 +1,5 @@
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { VOICE_SHORTCUTS } from "../../shared/shortcuts.ts";
 import {
 	type Component,
 	type TUI,
@@ -15,7 +16,7 @@ type TuiMouseEvent = { type: string; button: string; x: number; y: number; shift
 type TuiMouseEventResult = { handled?: boolean; render?: boolean };
 
 const ANIMATION_INTERVAL_MS = 80;
-const LIVE_TOGGLE_KEY = Key.ctrlShift("l");
+const LIVE_TOGGLE_KEY = VOICE_SHORTCUTS.live;
 const ANSI_ESCAPE_REGEXP = new RegExp(String.raw`\u001B\[[0-?]*[ -/]*[@-~]`, "g");
 
 export interface LiveVisualizerOptions {

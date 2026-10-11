@@ -13,12 +13,14 @@ export class TranscriptPreview {
 	private request?: AbortController;
 	private task?: Promise<void>;
 	private closed = false;
+	private unavailable = false;
 
 	constructor(private readonly options: {
 		transcribe(audio: Uint8Array, signal: AbortSignal): Promise<string>;
 		onText(text: string): void;
-		onUnavailable?(): void;
+		onUnavailable?(error: unknown): void;
 		intervalMs?: number;
+		timeoutMs?: number;
 	}) {}
 
 	append(chunk: Uint8Array): void {
@@ -42,7 +44,7 @@ export class TranscriptPreview {
 	}
 
 	private schedule(): void {
-		if (this.closed || this.timer || this.task || this.bytes < PCM_BYTES_PER_SECOND || this.revision === this.sentRevision) return;
+		if (this.closed || this.unavailable || this.timer || this.task || this.bytes < PCM_BYTES_PER_SECOND || this.revision === this.sentRevision) return;
 		this.timer = setTimeout(() => {
 			this.timer = undefined;
 			const task = this.update().catch(() => undefined);
@@ -64,11 +66,12 @@ export class TranscriptPreview {
 		for (const chunk of this.chunks) { pcm.set(chunk, offset); offset += chunk.length; }
 		try {
 			const audio = prepareWavForTranscription(pcmToWav(pcm, 24_000)).audio;
-			const text = await this.options.transcribe(audio, AbortSignal.any([request.signal, AbortSignal.timeout(8_000)]));
+			const text = await this.options.transcribe(audio, AbortSignal.any([request.signal, AbortSignal.timeout(this.options.timeoutMs ?? 8_000)]));
 			if (!this.closed && !request.signal.aborted && text.trim()) this.options.onText(text.trim());
-		} catch {
-			// Silence, a timeout or unavailable ASR never loses the recording or submits text.
-			if (!this.closed) this.options.onUnavailable?.();
+		} catch (error) {
+			// Preserve audio, but do not repeatedly upload into a known permanent challenge.
+			if ((error as { retryable?: boolean })?.retryable === false) this.unavailable = true;
+			if (!this.closed) this.options.onUnavailable?.(error);
 		} finally {
 			if (this.request === request) this.request = undefined;
 		}

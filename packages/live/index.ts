@@ -66,7 +66,7 @@ export default function liveVoice(pi: ExtensionAPI): void {
 					ctx.ui.notify(`Live voice ${enabled ? "enabled" : "disabled"}.`, "info");
 					break;
 				}
-				default: ctx.ui.notify("/live [start|stop|status|voice [name]|enabled on|off|help] · Ctrl+Shift+L toggles · Space mutes · Esc ends. Conversational voice may delegate work to Pi; it is not dictation or literal TTS.", "info");
+				default: ctx.ui.notify("/live [start|stop|status|voice [name]|enabled on|off|help] · Ctrl+Alt+L toggles · Space mutes · Esc ends. Conversational voice may delegate work to Pi; it is not dictation or literal TTS.", "info");
 			}
 		},
 	});

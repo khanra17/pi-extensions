@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { assistantText } from "../../shared/messages.ts";
+import { VOICE_SHORTCUTS } from "../../shared/shortcuts.ts";
 import { BrowserReadAloud } from "./browser.ts";
 import { registerBrowserFeature, requestBrowser } from "../../shared/browser.ts";
 import { DEFAULT_SETTINGS, EdgeReadAloudController, type ReaderSnapshot } from "./read-aloud-controller.ts";
@@ -122,7 +123,7 @@ export default function readAloud(pi: ExtensionAPI): void {
 			}
 		},
 	});
-	pi.registerShortcut("ctrl+alt+v", { description: "Open read-aloud controls", handler: async (ctx) => { if (ctx.mode === "tui") await panel(ctx); } });
+	pi.registerShortcut(VOICE_SHORTCUTS.tts, { description: "Open read-aloud controls", handler: async (ctx) => { if (ctx.mode === "tui") await panel(ctx); } });
 
 	async function pump(): Promise<void> {
 		if (disposed || pumping || reader.isActive || !queue.length || !reader.settingsSnapshot.autoPlay) return;

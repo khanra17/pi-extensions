@@ -25,10 +25,14 @@ Keep the existing HTTPS proxy/password configuration and reload the page. Mobile
 
 ## Controls
 
-- Microphone: tap to toggle or hold to talk. Alt+M/Ctrl+Space toggle; Esc cancels. Drafts remain editable; recording/finalizing cannot submit them.
-- Live: click its button or Ctrl+Shift+L; mute/end controls stay in the page. `/live voice` selects the response voice through Pi Web's extension dialog.
+- Microphone: tap to toggle or hold to talk. Ctrl+Alt+M toggles; Esc cancels. Drafts remain editable; recording/finalizing cannot submit them.
+- Live: click its button or Ctrl+Alt+L; mute/end controls stay in the page. `/live voice` selects the response voice through Pi Web's extension dialog.
 - Speaker: the single playback/settings launcher; opening it does not start speech. Press Play inside. Adjacent-message controls and searchable voices are in the same panel. Pause holds the queue; Stop clears it. Auto-read speaks new visible assistant updates/finals, not thinking or tool data. Without read-aloud installed, a generic controls icon takes its place.
 - Ctrl+Alt+V opens the panel. Closing it leaves speech playing; hiding the page stops media. Composer/session/tree changes are fenced against late results.
+
+Voice shortcuts use Ctrl+Alt+M/L/V in CLI and web, leaving Ctrl+Space (IME), Ctrl+X (clipboard) and Ctrl+Shift+L (browser) alone. AltGraph input is ignored; OS/custom bindings and terminals can still differ, so buttons/slash commands remain the fallback.
+
+Failures open an accessible error panel and remain visible after closing it. Dictation preview failures show their actual cause, not a generic delay. Choose **Local Whisper** in that panel or `/voice backend local` when Codex transcription is challenged: about 42 MiB of public model files download on first use, then CPU inference stays local. English by default; `PI_DICTATION_LANGUAGE` selects another Whisper language. No automatic switch or API-key/paid backend is used.
 
 Slash commands open the browser controls; microphone/audio permission is granted with a viewing-device gesture. Terminal controls remain independent.
 
@@ -46,6 +50,6 @@ npm run test:browser
 
 ## Verification
 
-48 focused tests and the production build pass. Isolated Chromium desktop/mobile-layout smoke covers growing WAV previews, final replacement, user edits, no auto-send, real MP3 decoding, prose highlighting, voice search, browser-to-browser WebRTC and stopped microphone tracks. ASR/signaling use fixtures; an actual Edge MP3 was synthesized separately. Production dependencies audited with zero reported vulnerabilities; upstream development dependencies reported 13.
+56 focused tests and the production build pass. Isolated Chromium desktop/mobile-layout smoke covers growing WAV previews, final replacement, user edits, no auto-send, real MP3 decoding, prose highlighting, voice search, browser-to-browser WebRTC and stopped microphone tracks. ASR/signaling use fixtures; an actual Edge MP3 was synthesized separately. Production dependencies audited with zero reported vulnerabilities; upstream development dependencies reported 13.
 
-A physical phone, Safari media and a fresh Codex Live service handshake are not certified. Playwright's Windows WebKit build lacks the required media APIs and cannot provide that certification.
+A separate browser probe completed a fresh real Codex Live signaling/WebRTC/data-channel/sideband handshake with a valid voice and test microphone, and real local CPU transcription of a public WAV passed. Those do not certify a physical phone, Safari media, or live real-microphone audio quality. Playwright's Windows WebKit build lacks the required media APIs and cannot provide that certification.

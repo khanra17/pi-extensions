@@ -78,5 +78,6 @@ export function applyAdapter(upstream, kit) {
   copy("integration/pi-web/server/route.ts", "app/api/pi-voice/v1/[id]/route.ts");
   copy("shared/browser.ts", "lib/pi-voice-bridge.ts");
   copy("shared/messages.ts", "lib/pi-voice-messages.ts");
+  copy("shared/shortcuts.ts", "lib/pi-voice-shortcuts.ts");
   copy("packages/dictation/composer.ts", "lib/pi-voice-composer.ts");
 }

@@ -63,7 +63,7 @@ if (mode === "start") {
   adaptSources(source); // Fail before installing dependencies or touching an active build.
   const hash = createHash("sha256").update(commit).update(process.platform + process.arch + process.versions.modules);
   hashFiles(join(kit, "integration/pi-web"), hash);
-  for (const file of ["shared/browser.ts", "shared/messages.ts", "packages/dictation/composer.ts"]) hash.update(readFileSync(join(kit, file)));
+  for (const file of ["shared/browser.ts", "shared/messages.ts", "shared/shortcuts.ts", "packages/dictation/composer.ts"]) hash.update(readFileSync(join(kit, file)));
   const directory = join(cache, "pi-web-builds", commit.slice(0, 12) + "-" + hash.digest("hex").slice(0, 12));
   if (mode === "check") {
     console.log("Pi Web adapter anchors passed for", commit, "; build/typecheck/browser tests are still required.");

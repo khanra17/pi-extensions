@@ -177,3 +177,20 @@ export function markWord(elements: HTMLElement[], word: string, cursor: { offset
   css.highlights.set("pi-voice-word", new Constructor(range));
 }
 export function clearWord(): void { (CSS as unknown as { highlights?: Map<string, unknown> }).highlights?.delete("pi-voice-word"); }
+
+export function waitForLivePeer(peer: RTCPeerConnection, signal: AbortSignal, timeoutMs = 20_000, channel?: RTCDataChannel): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const finish = (error?: unknown) => {
+      clearTimeout(timer); peer.removeEventListener("connectionstatechange", changed); peer.removeEventListener("iceconnectionstatechange", changed); signal.removeEventListener("abort", abort); channel?.removeEventListener("open", changed); channel?.removeEventListener("close", changed);
+      if (error) reject(error); else resolve();
+    };
+    const abort = () => finish(signal.reason ?? new Error("Live connection cancelled."));
+    const changed = () => {
+      if (peer.connectionState === "connected" && (!channel || channel.readyState === "open")) finish();
+      else if (["failed", "closed"].includes(peer.connectionState) || peer.iceConnectionState === "failed" || channel?.readyState === "closed") finish(new Error(`Live WebRTC failed (peer ${peer.connectionState}, ICE ${peer.iceConnectionState}). Check this device's network; HTTPS alone does not relay WebRTC audio.`));
+    };
+    const timer = setTimeout(() => finish(new Error(`Live WebRTC timed out (peer ${peer.connectionState}, ICE ${peer.iceConnectionState}). The network may block UDP; try another network.`)), timeoutMs);
+    peer.addEventListener("connectionstatechange", changed); peer.addEventListener("iceconnectionstatechange", changed); channel?.addEventListener("open", changed); channel?.addEventListener("close", changed); signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort(); else changed();
+  });
+}

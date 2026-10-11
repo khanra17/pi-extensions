@@ -38,6 +38,8 @@ export interface LiveTransportOptions {
 	/** Browser owns the WebRTC peer and media tracks; Node only signals and handles sideband. */
 	browserOffer?: string;
 	onBrowserAnswer?: (answer: string) => void;
+	/** Browser must apply the answer and establish WebRTC before sideband attachment. */
+	waitForBrowserPeer?: () => Promise<void>;
 }
 
 type Lifecycle = "idle" | "connecting" | "connected" | "closing" | "closed";
@@ -204,6 +206,8 @@ export class CodexLiveTransport {
 			const signaling = await this.signalOffer(this.options.browserOffer);
 			if (this.state !== "connecting") throw abortReason(this.operationSignal);
 			this.options.onBrowserAnswer?.(signaling.answer);
+			await this.options.waitForBrowserPeer?.();
+			if (this.state !== "connecting") throw abortReason(this.operationSignal);
 			await this.connectSideband(signaling.callId, signaling.auth, signaling.attestation);
 			if (this.state !== "connecting") throw abortReason(this.operationSignal);
 			this.state = "connected";

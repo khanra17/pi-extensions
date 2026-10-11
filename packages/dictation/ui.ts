@@ -1,4 +1,5 @@
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { VOICE_SHORTCUT_LABELS } from "../../shared/shortcuts.ts";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 export type VoiceStatus = "idle" | "starting" | "recording" | "transcribing" | "success" | "error";
@@ -60,11 +61,11 @@ export class VoiceStatusWidget {
 			(status === "recording"
 				? "Microphone active"
 				: status === "transcribing"
-					? "Sending audio through Codex"
+					? "Finalizing transcription"
 					: "Voice input unavailable");
 		const hint =
 			status === "recording"
-				? "Ctrl+X stop  ·  Esc cancel  ·  Alt+M toggle"
+				? `${VOICE_SHORTCUT_LABELS.dictation} stop  ·  Esc cancel`
 				: status === "starting" || status === "transcribing"
 					? "Esc cancel"
 					: status === "success"
@@ -72,7 +73,7 @@ export class VoiceStatusWidget {
 						: "See the notification for details";
 
 		const lines = [
-			this.border(width, "top", width >= 26 ? "CODEX VOICE" : "VOICE", style.border),
+			this.border(width, "top", "VOICE INPUT", style.border),
 			this.line(width, this.theme.fg(style.label, this.theme.bold(label)), style.border),
 		];
 		if (status === "recording" && width >= 28) {

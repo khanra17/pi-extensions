@@ -19,5 +19,8 @@
     "extensions": [
       "./index.ts"
     ]
+  },
+  "optionalDependencies": {
+    "@huggingface/transformers": "4.3.1"
   }
 }

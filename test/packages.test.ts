@@ -48,6 +48,6 @@ test("package manifests have explicit, non-overlapping entry points and host pee
 		assert.deepEqual(manifest.pi.extensions, ["./index.ts"]);
 		assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], "*");
 		assert.equal(manifest.dependencies?.["@earendil-works/pi-coding-agent"], undefined);
-		if (name === "dictation") { assert.equal(manifest.dependencies, undefined); assert.equal(manifest.optionalDependencies, undefined); }
+		if (name === "dictation") { assert.equal(manifest.dependencies, undefined); assert.deepEqual(manifest.optionalDependencies, { "@huggingface/transformers": "4.3.1" }); }
 	}
 });

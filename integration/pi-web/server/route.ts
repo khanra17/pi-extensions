@@ -115,5 +115,5 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return json({ error: "Invalid control body." }, 400);
     const result = await adapter.handle({ action, client, run: owned, body: parsed as Record<string, unknown>, audio: wav ? bytes : undefined, signal: request.signal });
     return result instanceof Response ? result : json(result);
-  } catch (error) { return json({ error: error instanceof Error ? error.message : String(error) }, 400); }
+  } catch (error) { const detail = error as { code?: string; retryable?: boolean }; return json({ error: error instanceof Error ? error.message : String(error), code: detail?.code, retryable: detail?.retryable }, 400); }
 }
