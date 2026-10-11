@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { resolveCodexVoiceAuth } from "../../shared/codex.ts";
+import { resolveVoiceAuth } from "../../shared/codex.ts";
 import { registerBrowserFeature, requestBrowser } from "../../shared/browser.ts";
 import { BrowserLive } from "./browser.ts";
 import { registerLiveVoice } from "./registration.ts";
@@ -25,7 +25,7 @@ export default function liveVoice(pi: ExtensionAPI): void {
 	registerLiveVoice(pi, {
 		getAuth: async (ctx, signal) => {
 			if (signal?.aborted) throw signal.reason;
-			const auth = await resolveCodexVoiceAuth(ctx);
+			const auth = await resolveVoiceAuth(ctx);
 			if (signal?.aborted) throw signal.reason;
 			return auth;
 		},

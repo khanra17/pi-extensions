@@ -20,7 +20,7 @@ const MAX_ERROR_BODY_LENGTH = 2_048;
 const SIDEBAND_CONNECT_ATTEMPTS = 5;
 const SIDEBAND_CONNECT_TIMEOUT_MS = 15_000;
 const LIVE_ORIGINATOR = "Codex Desktop";
-const LIVE_CALL_ID_PATTERN = /^rtc_[\w-]+$/u;
+const LIVE_CALL_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
 
 export interface LiveTransportCallbacks {
 	onEvent(event: LiveServerEvent): void;
@@ -103,21 +103,35 @@ function wait(delayMs: number, signal?: AbortSignal): Promise<void> {
 
 export function parseLiveCallId(location: string | null): string | undefined {
 	if (!location) return undefined;
-	return location
-		.split("?", 1)[0]
-		?.split("/")
-		.find((segment) => LIVE_CALL_ID_PATTERN.test(segment));
+	if (LIVE_CALL_ID_PATTERN.test(location)) return location;
+	try {
+		const url = new URL(location, DEFAULT_SIGNALING_BASE_URL);
+		const query = url.searchParams.get("call_id");
+		if (query && LIVE_CALL_ID_PATTERN.test(query)) return query;
+		const parts = url.pathname.replace(/\/+$/u, "").split("/");
+		const id = parts.pop(), parent = parts.pop();
+		return id && LIVE_CALL_ID_PATTERN.test(id) && ["live", "calls", "codex"].includes(parent ?? "") ? id : undefined;
+	} catch { return undefined; }
 }
 
-export function buildLiveSignalingUrl(baseUrl = DEFAULT_SIGNALING_BASE_URL): string {
+export function buildLiveSignalingUrl(baseUrl = DEFAULT_SIGNALING_BASE_URL, route?: "openai"): string {
 	const base = new URL(baseUrl);
-	base.pathname = `${base.pathname.replace(/\/+$/u, "")}${SIGNALING_PATH}`;
+	const root = base.pathname.replace(/\/+$/u, "").replace(/\/backend-api\/codex$/u, "/backend-api");
+	base.pathname = `${root}${route === "openai" ? "/realtime/calls" : SIGNALING_PATH}`;
 	base.search = SIGNALING_QUERY;
 	base.hash = "";
 	return base.toString();
 }
 
-export function buildLiveSidebandUrl(callId: string): string {
+export function buildLiveSidebandUrl(callId: string, auth?: CodexVoiceAuth): string {
+	if (auth?.route === "openai") {
+		// Cockpit's frameless /live alias keeps the exact bootstrap account binding.
+		const base = new URL(auth.baseUrl);
+		base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
+		base.pathname = `${base.pathname.replace(/\/+$/u, "")}/live/${encodeURIComponent(callId)}`;
+		base.search = ""; base.hash = "";
+		return base.toString();
+	}
 	return `wss://api.openai.com/v1/live/${encodeURIComponent(callId)}`;
 }
 
@@ -136,10 +150,16 @@ export function buildLiveHeaders(
 		version: CODEX_CLIENT_VERSION,
 		"session-id": sessionId,
 		"thread-id": sessionId,
-		"chatgpt-account-id": auth.accountId,
 	};
-	if (attestation) headers["x-oai-attestation"] = attestation;
-	return headers;
+	if (auth.route !== "openai" && auth.accountId) headers["chatgpt-account-id"] = auth.accountId;
+	if (attestation && auth.route !== "openai") headers["x-oai-attestation"] = attestation;
+	const merged = new Headers(headers);
+	if (!auth.accessToken) merged.delete("Authorization");
+	for (const [name, value] of Object.entries(auth.headers ?? {})) {
+		if (value === null) merged.delete(name); else merged.set(name, value);
+	}
+	const result: Record<string, string> = {}; merged.forEach((value, name) => { result[name] = value; });
+	return result;
 }
 
 /** WebRTC carries microphone/output audio; the sideband carries text and delegation events. */
@@ -240,18 +260,18 @@ export class CodexLiveTransport {
 
 	private async signalOffer(offer: string): Promise<SignalingResult> {
 		const auth = await this.options.getAuth(this.operationSignal);
-		if (!auth.accessToken || !auth.accountId) {
+		if (auth.route !== "openai" && (!auth.accessToken || !auth.accountId)) {
 			throw new Error("OpenAI Codex OAuth credentials are incomplete. Run /login and choose OpenAI Codex.");
 		}
-		const attestation = await generateCodexAttestation(this.native ?? {});
-		const url = buildLiveSignalingUrl(auth.baseUrl);
+		const attestation = auth.route === "openai" ? undefined : await generateCodexAttestation(this.native ?? {});
+		const url = buildLiveSignalingUrl(auth.baseUrl, auth.route);
 		const headers = buildLiveHeaders(auth, this.options.sessionId, this.realtimeSessionId, attestation);
 		const proxyUrl = getProxyForUrl(url);
 		const dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
 		try {
 			const response = await undiciFetch(url, {
-				method: "POST",
-				headers: { ...headers, Accept: "*/*", "Content-Type": "application/json" },
+				method: "POST", redirect: "error",
+				headers: { ...headers, accept: "*/*", "content-type": "application/json" },
 				body: JSON.stringify({
 					sdp: offer,
 					session: buildLiveSessionPayload(this.options.instructions, this.options.voice),
@@ -268,7 +288,13 @@ export class CodexLiveTransport {
 			if (!responseBody.trim()) throw new Error("Codex live signaling returned an empty SDP answer.");
 			const callId = parseLiveCallId(response.headers.get("location"));
 			if (!callId) throw new Error("Codex live signaling returned no valid call ID.");
-			return { answer: responseBody, callId, auth, attestation };
+			let answer = responseBody;
+			if (response.headers.get("content-type")?.includes("application/json")) {
+				const body = JSON.parse(responseBody) as { sdp?: unknown };
+				if (typeof body.sdp !== "string" || !body.sdp.trim()) throw new Error("Live signaling returned no SDP answer.");
+				answer = body.sdp;
+			}
+			return { answer, callId, auth, attestation };
 		} finally {
 			await dispatcher?.close();
 		}
@@ -300,7 +326,7 @@ export class CodexLiveTransport {
 		auth: CodexVoiceAuth,
 		attestation: string | undefined,
 	): Promise<void> {
-		const url = buildLiveSidebandUrl(callId);
+		const url = buildLiveSidebandUrl(callId, auth);
 		const proxyUrl = getProxyForUrl(url);
 		const socket = new WebSocketConstructor(url, {
 			headers: buildLiveHeaders(auth, this.options.sessionId, this.realtimeSessionId, attestation),

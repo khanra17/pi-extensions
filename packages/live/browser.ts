@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { emitBrowser, requireOwner, type BrowserAdapter, type BrowserCall } from "../../shared/browser.ts";
-import { resolveCodexVoiceAuth } from "../../shared/codex.ts";
+import { resolveVoiceAuth } from "../../shared/codex.ts";
 import { LiveSessionController, type LiveTransport } from "./controller.ts";
 import { CodexLiveTransport, type LiveTransportOptions } from "./transport.ts";
 import { buildLiveStartupContext } from "./context.ts";
@@ -20,7 +20,7 @@ export class BrowserLive implements BrowserAdapter {
   private active?: Active;
   isActive(): boolean { return Boolean(this.active); }
   constructor(private readonly pi: ExtensionAPI, private readonly ctx: ExtensionContext, private readonly voice: () => string, private readonly enabled: () => boolean,
-    private readonly deps = { auth: resolveCodexVoiceAuth, transport: (options: LiveTransportOptions): LiveTransport => new CodexLiveTransport(options) }) {}
+    private readonly deps = { auth: resolveVoiceAuth, transport: (options: LiveTransportOptions): LiveTransport => new CodexLiveTransport(options) }) {}
   async handle(call: BrowserCall): Promise<unknown> {
     if (call.action === "start") {
       if (!this.enabled()) throw new Error("Live voice is disabled. Use /live enabled on.");
